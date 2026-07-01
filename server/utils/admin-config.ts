@@ -21,9 +21,16 @@ export type SanitizedApiKeyConfig = {
   enabled: boolean
 }
 
-export type SanitizedAppConfig = Omit<AppConfig, 'admin_key' | 'api_keys'> & {
+export type SanitizedAppConfig = {
+  server: Pick<AppConfig['server'], 'port' | 'host'>
   admin_key: string | null
   api_keys: SanitizedApiKeyConfig[]
+  reelmind: Pick<ReelmindConfig, 'api_base' | 'web_base' | 'google_client_id'>
+  database: Pick<DatabaseConfig, 'path'>
+  polling: Pick<
+    PollingConfig,
+    'interval' | 'max_retries' | 'token_refresh_margin'
+  >
 }
 
 export type ConfigPatch = Partial<{
@@ -111,9 +118,25 @@ export function getSanitizedConfig(
   config = loadConfig(),
 ): SanitizedAppConfig {
   return {
-    ...config,
+    server: {
+      port: config.server.port,
+      host: config.server.host,
+    },
     admin_key: maskSecret(config.admin_key),
     api_keys: sanitizeApiKeys(config.api_keys),
+    reelmind: {
+      api_base: config.reelmind.api_base,
+      web_base: config.reelmind.web_base,
+      google_client_id: config.reelmind.google_client_id,
+    },
+    database: {
+      path: config.database.path,
+    },
+    polling: {
+      interval: config.polling.interval,
+      max_retries: config.polling.max_retries,
+      token_refresh_margin: config.polling.token_refresh_margin,
+    },
   }
 }
 

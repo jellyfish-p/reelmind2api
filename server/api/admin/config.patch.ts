@@ -1,4 +1,8 @@
-import { adminError, requireAdmin } from '../../utils/admin-response'
+import {
+  adminError,
+  adminInternalError,
+  requireAdmin,
+} from '../../utils/admin-response'
 import { isConfigPatchError, patchConfig } from '../../utils/admin-config'
 
 export default defineEventHandler(async (event) => {
@@ -9,7 +13,13 @@ export default defineEventHandler(async (event) => {
     const body = await readBody(event)
     return patchConfig(body)
   } catch (error: any) {
-    if (!isConfigPatchError(error)) throw error
-    return adminError(event, 400, error.message, 'invalid_config_patch')
+    if (isConfigPatchError(error)) {
+      return adminError(event, 400, error.message, 'invalid_config_patch')
+    }
+    return adminInternalError(
+      event,
+      'Admin persistence failed',
+      'admin_persistence_failed',
+    )
   }
 })

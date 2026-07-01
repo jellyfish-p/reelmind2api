@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   inTransaction: false,
   transactionCalls: 0,
   operations: [] as Array<Record<string, any>>,
+  failInsert: false,
 }))
 
 vi.mock('../server/utils/api-auth', () => ({
@@ -86,6 +87,7 @@ vi.mock('../server/db', () => {
       values: vi.fn((values: Record<string, any>) => ({
         run: vi.fn(() => {
           if (table !== schema.accounts) return {}
+          if (state.failInsert) throw new Error('database path leaked')
           assertUniqueAccount(values)
           const row = { id: state.nextId++, ...values }
           state.accounts.push(row)
@@ -169,6 +171,7 @@ function resetState() {
   state.inTransaction = false
   state.transactionCalls = 0
   state.operations = []
+  state.failInsert = false
 }
 
 describe('admin account token pool API', () => {
@@ -304,6 +307,28 @@ describe('admin account token pool API', () => {
       error: {
         message: 'Account already exists',
         code: 'duplicate_account',
+      },
+    })
+    expect(state.accounts).toHaveLength(1)
+  })
+
+  it('returns structured 500 JSON when account creation hits an unexpected DB failure', async () => {
+    state.failInsert = true
+    const handler = await loadRoute('../server/api/admin/accounts/index.post')
+    const event = {
+      body: {
+        email: 'two@example.test',
+        googleSub: 'google-two',
+      },
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 500)
+    expect(result).toEqual({
+      error: {
+        message: 'Admin database operation failed',
+        code: 'admin_database_failed',
       },
     })
     expect(state.accounts).toHaveLength(1)

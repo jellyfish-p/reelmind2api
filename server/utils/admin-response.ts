@@ -23,6 +23,14 @@ export function adminError(
   return adminErrorBody(message, code)
 }
 
+export function adminInternalError(
+  event: any,
+  message: string,
+  code: string,
+): AdminError {
+  return adminError(event, 500, message, code)
+}
+
 function adminErrorBody(message: string, code: string): AdminError {
   return { error: { message, code } }
 }

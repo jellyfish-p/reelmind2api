@@ -1,5 +1,9 @@
 import { eq } from 'drizzle-orm'
-import { adminError, requireAdmin } from '../../../utils/admin-response'
+import {
+  adminError,
+  adminInternalError,
+  requireAdmin,
+} from '../../../utils/admin-response'
 import {
   accountPatchValues,
   isAccountInputError,
@@ -57,8 +61,14 @@ export default defineEventHandler(async (event) => {
     if (isUniqueAccountConstraintError(error)) {
       return duplicateAccountError(event)
     }
-    if (!isAccountInputError(error)) throw error
-    return adminError(event, error.status, error.message, error.code)
+    if (isAccountInputError(error)) {
+      return adminError(event, error.status, error.message, error.code)
+    }
+    return adminInternalError(
+      event,
+      'Admin database operation failed',
+      'admin_database_failed',
+    )
   }
 })
 

@@ -1,4 +1,8 @@
-import { adminError, requireAdmin } from '../../../utils/admin-response'
+import {
+  adminError,
+  adminInternalError,
+  requireAdmin,
+} from '../../../utils/admin-response'
 import {
   deleteApiKey,
   isApiKeyConfigError,
@@ -11,8 +15,14 @@ export default defineEventHandler(async (event) => {
   try {
     return deleteApiKey(decodedRouteKey(event))
   } catch (error: any) {
-    if (!isApiKeyConfigError(error)) throw error
-    return adminError(event, error.status, error.message, error.code)
+    if (isApiKeyConfigError(error)) {
+      return adminError(event, error.status, error.message, error.code)
+    }
+    return adminInternalError(
+      event,
+      'Admin persistence failed',
+      'admin_persistence_failed',
+    )
   }
 })
 

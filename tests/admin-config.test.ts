@@ -163,6 +163,72 @@ describe('admin config API', () => {
     ])
   })
 
+  it('omits unknown top-level and nested config fields from authenticated admin reads', async () => {
+    adminAuthState.valid = true
+    configState.current = {
+      ...testConfig(),
+      server: {
+        ...testConfig().server,
+        private_bind_token: 'server-secret',
+      },
+      reelmind: {
+        ...testConfig().reelmind,
+        client_secret: 'reelmind-secret',
+      },
+      database: {
+        ...testConfig().database,
+        password: 'database-secret',
+      },
+      polling: {
+        ...testConfig().polling,
+        backoff_secret: 'polling-secret',
+      },
+      webhook_secret: 'top-level-secret',
+      diagnostics: { expose: false },
+    }
+    const handler = await loadRoute('../server/api/admin/config.get')
+
+    const result = await handler({})
+
+    expect(result).toEqual({
+      server: { port: 3000, host: '0.0.0.0' },
+      admin_key: 'admi***1234',
+      api_keys: [
+        {
+          key: 'sk-l***-key',
+          name: 'Primary',
+          quota: 100,
+          rate_limit: 60,
+          enabled: true,
+        },
+        {
+          key: '***',
+          name: 'Short',
+          quota: 0,
+          rate_limit: 10,
+          enabled: false,
+        },
+      ],
+      reelmind: {
+        api_base: 'https://nestapi.reelmind.ai',
+        web_base: 'https://reelmind.ai',
+        google_client_id: 'google-client',
+      },
+      database: { path: './data/reelmind.db' },
+      polling: {
+        interval: 5000,
+        max_retries: 120,
+        token_refresh_margin: 300,
+      },
+    })
+    expect(result).not.toHaveProperty('webhook_secret')
+    expect(result).not.toHaveProperty('diagnostics')
+    expect((result as any).server).not.toHaveProperty('private_bind_token')
+    expect((result as any).reelmind).not.toHaveProperty('client_secret')
+    expect((result as any).database).not.toHaveProperty('password')
+    expect((result as any).polling).not.toHaveProperty('backoff_secret')
+  })
+
   it('patches allowed config fields, persists YAML, resets cache, and returns sanitized config', async () => {
     adminAuthState.valid = true
     const handler = await loadRoute('../server/api/admin/config.patch')
@@ -204,6 +270,26 @@ describe('admin config API', () => {
       },
     })
     expect(writtenConfig.api_keys[0].key).toBe('sk-local-admin-key')
+  })
+
+  it('returns structured 500 JSON when config patch persistence fails', async () => {
+    adminAuthState.valid = true
+    fsState.writeFileSync.mockImplementationOnce(() => {
+      throw new Error('disk full with secret path details')
+    })
+    const handler = await loadRoute('../server/api/admin/config.patch')
+    const event = { body: { server: { port: 4100 } } }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 500)
+    expect(result).toEqual({
+      error: {
+        message: 'Admin persistence failed',
+        code: 'admin_persistence_failed',
+      },
+    })
+    expect(configState.resetConfigCache).not.toHaveBeenCalled()
   })
 
   it('rejects admin API key list reads without a valid admin key', async () => {
@@ -310,6 +396,34 @@ describe('admin config API', () => {
       rate_limit: 25,
       enabled: true,
     })
+  })
+
+  it('returns structured 500 JSON when API key creation persistence fails', async () => {
+    adminAuthState.valid = true
+    fsState.writeFileSync.mockImplementationOnce(() => {
+      throw new Error('raw config write failure')
+    })
+    const handler = await loadRoute('../server/api/admin/api-keys/index.post')
+    const event = {
+      body: {
+        key: 'sk-created-key',
+        name: 'Created key',
+        quota: 250,
+        rate_limit: 25,
+        enabled: true,
+      },
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 500)
+    expect(result).toEqual({
+      error: {
+        message: 'Admin persistence failed',
+        code: 'admin_persistence_failed',
+      },
+    })
+    expect(configState.resetConfigCache).not.toHaveBeenCalled()
   })
 
   it('rejects duplicate API key creation with a 409 response', async () => {

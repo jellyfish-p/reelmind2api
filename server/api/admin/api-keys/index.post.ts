@@ -1,4 +1,8 @@
-import { adminError, requireAdmin } from '../../../utils/admin-response'
+import {
+  adminError,
+  adminInternalError,
+  requireAdmin,
+} from '../../../utils/admin-response'
 import {
   createApiKey,
   isApiKeyConfigError,
@@ -12,7 +16,13 @@ export default defineEventHandler(async (event) => {
     const body = await readBody(event)
     return createApiKey(body)
   } catch (error: any) {
-    if (!isApiKeyConfigError(error)) throw error
-    return adminError(event, error.status, error.message, error.code)
+    if (isApiKeyConfigError(error)) {
+      return adminError(event, error.status, error.message, error.code)
+    }
+    return adminInternalError(
+      event,
+      'Admin persistence failed',
+      'admin_persistence_failed',
+    )
   }
 })

@@ -1,5 +1,9 @@
 import { eq } from 'drizzle-orm'
-import { adminError, requireAdmin } from '../../../utils/admin-response'
+import {
+  adminError,
+  adminInternalError,
+  requireAdmin,
+} from '../../../utils/admin-response'
 import { parseAccountId } from '../../../utils/admin-accounts'
 import { getDb, schema } from '../../../db'
 
@@ -12,24 +16,32 @@ export default defineEventHandler(async (event) => {
     return adminError(event, 404, 'Account not found', 'account_not_found')
   }
 
-  const db = getDb()
-  const account = db
-    .select()
-    .from(schema.accounts)
-    .where(eq(schema.accounts.id, id))
-    .get()
+  try {
+    const db = getDb()
+    const account = db
+      .select()
+      .from(schema.accounts)
+      .where(eq(schema.accounts.id, id))
+      .get()
 
-  if (!account) {
-    return adminError(event, 404, 'Account not found', 'account_not_found')
+    if (!account) {
+      return adminError(event, 404, 'Account not found', 'account_not_found')
+    }
+
+    db.transaction((tx: any) => {
+      tx.update(schema.tasks)
+        .set({ accountId: null })
+        .where(eq(schema.tasks.accountId, id))
+        .run()
+      tx.delete(schema.accounts).where(eq(schema.accounts.id, id)).run()
+    })
+
+    return { deleted: true }
+  } catch {
+    return adminInternalError(
+      event,
+      'Admin database operation failed',
+      'admin_database_failed',
+    )
   }
-
-  db.transaction((tx: any) => {
-    tx.update(schema.tasks)
-      .set({ accountId: null })
-      .where(eq(schema.tasks.accountId, id))
-      .run()
-    tx.delete(schema.accounts).where(eq(schema.accounts.id, id)).run()
-  })
-
-  return { deleted: true }
 })
