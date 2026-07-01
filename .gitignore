@@ -5,6 +5,7 @@
 .nitro
 .cache
 dist
+.worktrees
 
 # Node dependencies
 node_modules
