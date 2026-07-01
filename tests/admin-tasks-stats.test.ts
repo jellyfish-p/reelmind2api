@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   tasks: [] as Array<Record<string, any>>,
   accounts: [] as Array<Record<string, any>>,
   apiKeys: [] as Array<Record<string, any>>,
+  configLoads: 0,
   operations: [] as Array<Record<string, any>>,
 }))
 
@@ -15,9 +16,12 @@ vi.mock('../server/utils/api-auth', () => ({
 }))
 
 vi.mock('../server/utils/config', () => ({
-  loadConfig: vi.fn(() => ({
-    api_keys: state.apiKeys,
-  })),
+  loadConfig: vi.fn(() => {
+    state.configLoads++
+    return {
+      api_keys: state.apiKeys,
+    }
+  }),
 }))
 
 vi.mock('drizzle-orm', () => {
@@ -93,6 +97,7 @@ vi.mock('../server/db', () => {
       accountId: { key: 'accountId' },
       apiTokenId: { key: 'apiTokenId' },
       createdAt: { key: 'createdAt' },
+      creditsUsed: { key: 'creditsUsed' },
     },
   }
 
@@ -106,6 +111,10 @@ vi.mock('../server/db', () => {
     if (table === schema.accounts) return 'accounts'
     if (table === schema.tasks) return 'tasks'
     return 'unknown'
+  }
+
+  function selectedFields(selection?: Record<string, any>) {
+    return selection ? Object.keys(selection) : null
   }
 
   function createSelectBuilder(selection?: Record<string, any>) {
@@ -136,12 +145,28 @@ vi.mock('../server/db', () => {
       const start = selectedOffset
       const end =
         selectedLimit === undefined ? undefined : selectedOffset + selectedLimit
-      return rows.slice(start, end)
+      return rows.slice(start, end).map(projectRow)
+    }
+
+    function projectRow(row: Record<string, any>) {
+      if (!selection) return row
+
+      return Object.fromEntries(
+        Object.entries(selection).map(([alias, column]) => [
+          alias,
+          row[(column as { key: string }).key],
+        ]),
+      )
     }
 
     const builder = {
       from: vi.fn((table: any) => {
         selectedTable = table
+        state.operations.push({
+          type: 'select',
+          table: tableName(selectedTable),
+          selectedFields: selectedFields(selection),
+        })
         return builder
       }),
       where: vi.fn((condition: (row: Record<string, any>) => boolean) => {
@@ -172,6 +197,7 @@ vi.mock('../server/db', () => {
           ordered: orders.length > 0,
           limit: selectedLimit,
           offset: selectedOffset,
+          selectedFields: selectedFields(selection),
         })
         return filteredRows()
       }),
@@ -181,6 +207,7 @@ vi.mock('../server/db', () => {
           table: tableName(selectedTable),
           filtered: Boolean(predicate),
           selection: selection?.total?.kind === 'count' ? 'count' : 'row',
+          selectedFields: selectedFields(selection),
         })
         if (selection?.total?.kind === 'count') {
           const rows = predicate
@@ -310,6 +337,7 @@ describe('admin task logs API', () => {
     state.tasks = taskRows()
     state.accounts = []
     state.apiKeys = []
+    state.configLoads = 0
     state.operations = []
     vi.stubGlobal('defineEventHandler', (handler: RouteHandler) => handler)
     vi.stubGlobal('setResponseStatus', vi.fn())
@@ -575,6 +603,8 @@ describe('admin stats API', () => {
         type: 'video',
         creditsUsed: 3,
         createdAt: now - 1_000,
+        parameters: '{"large":"payload"}',
+        resultData: '{"asset":"private"}',
       },
       {
         id: 2,
@@ -600,6 +630,7 @@ describe('admin stats API', () => {
       { key: 'sk-one', name: 'One' },
       { key: 'sk-two', name: 'Two' },
     ]
+    state.configLoads = 0
     state.operations = []
     vi.stubGlobal('defineEventHandler', (handler: RouteHandler) => handler)
     vi.stubGlobal('setResponseStatus', vi.fn())
@@ -637,10 +668,18 @@ describe('admin stats API', () => {
       },
     })
     expect(state.operations).toContainEqual(
-      expect.objectContaining({ type: 'all', table: 'tasks' }),
+      expect.objectContaining({
+        type: 'all',
+        table: 'tasks',
+        selectedFields: ['createdAt', 'status', 'type', 'creditsUsed'],
+      }),
     )
     expect(state.operations).toContainEqual(
-      expect.objectContaining({ type: 'all', table: 'accounts' }),
+      expect.objectContaining({
+        type: 'all',
+        table: 'accounts',
+        selectedFields: ['tokenExpiresAt'],
+      }),
     )
   })
 
@@ -652,6 +691,8 @@ describe('admin stats API', () => {
     const result = await handler(event)
 
     expect(setResponseStatus).toHaveBeenCalledWith(event, 401)
+    expect(state.operations).toEqual([])
+    expect(state.configLoads).toBe(0)
     expect(result).toEqual({
       error: {
         message: 'Invalid admin key',

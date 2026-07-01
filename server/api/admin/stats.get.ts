@@ -5,14 +5,29 @@ import { getDb, schema } from '../../db'
 import type { Account, Task } from '../../db/schema'
 
 const RECENT_TASK_WINDOW_MS = 24 * 60 * 60 * 1000
+type StatsTask = Pick<Task, 'createdAt' | 'status' | 'type' | 'creditsUsed'>
+type StatsAccount = Pick<Account, 'tokenExpiresAt'>
 
 export default defineEventHandler(async (event) => {
   const authError = await requireAdmin(event)
   if (authError) return authError
 
   const db = getDb()
-  const tasks = db.select().from(schema.tasks).all() as Task[]
-  const accounts = db.select().from(schema.accounts).all() as Account[]
+  const tasks = db
+    .select({
+      createdAt: schema.tasks.createdAt,
+      status: schema.tasks.status,
+      type: schema.tasks.type,
+      creditsUsed: schema.tasks.creditsUsed,
+    })
+    .from(schema.tasks)
+    .all() as StatsTask[]
+  const accounts = db
+    .select({
+      tokenExpiresAt: schema.accounts.tokenExpiresAt,
+    })
+    .from(schema.accounts)
+    .all() as StatsAccount[]
   const apiKeys = loadConfig().api_keys
   const now = Date.now()
   const recentSince = now - RECENT_TASK_WINDOW_MS
