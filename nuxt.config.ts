@@ -2,9 +2,7 @@ export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
   runtimeConfig: {
-    nestApiBaseUrl: 'https://nestapi.reelmind.ai',
     googleClientId: '',
-    reelmindApiKey: '',
     public: {
       apiBaseUrl: '/api',
     },
