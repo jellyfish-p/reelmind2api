@@ -72,5 +72,11 @@ export function findApiKey(key: string): ApiKeyConfig | undefined {
 
 export function validateAdminKey(key: string): boolean {
   const config = loadConfig()
-  return key === config.admin_key
+  const presentedKey = typeof key === 'string' ? key : ''
+  const storedKey = typeof config.admin_key === 'string' ? config.admin_key : ''
+  return Boolean(
+    presentedKey.trim() &&
+      storedKey.trim() &&
+      presentedKey === storedKey,
+  )
 }

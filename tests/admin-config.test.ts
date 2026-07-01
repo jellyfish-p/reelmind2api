@@ -24,6 +24,7 @@ const configState = vi.hoisted(() => ({
 const fsState = vi.hoisted(() => ({
   writeFileSync: vi.fn(),
   renameSync: vi.fn(),
+  unlinkSync: vi.fn(),
 }))
 
 vi.mock('../server/utils/api-auth', () => ({
@@ -42,6 +43,7 @@ vi.mock('fs', async (importOriginal) => {
     ...actual,
     writeFileSync: fsState.writeFileSync,
     renameSync: fsState.renameSync,
+    unlinkSync: fsState.unlinkSync,
   }
 })
 
@@ -164,9 +166,9 @@ describe('admin config API', () => {
     expect(fsState.renameSync).toHaveBeenCalledOnce()
     expect(configState.resetConfigCache).toHaveBeenCalledOnce()
 
-    const [tempPath, yaml, encoding] = fsState.writeFileSync.mock.calls[0]
+    const [tempPath, yaml, options] = fsState.writeFileSync.mock.calls[0]
     expect(dirname(tempPath)).toBe(dirname(configState.configPath))
-    expect(encoding).toBe('utf-8')
+    expect(options).toEqual({ encoding: 'utf-8', mode: 0o600 })
     expect(fsState.renameSync).toHaveBeenCalledWith(tempPath, configState.configPath)
 
     const writtenConfig = loadYaml(yaml as string) as any
@@ -223,6 +225,60 @@ describe('admin config API', () => {
     })
     expect(fsState.writeFileSync).not.toHaveBeenCalled()
     expect(fsState.renameSync).not.toHaveBeenCalled()
+    expect(configState.resetConfigCache).not.toHaveBeenCalled()
+  })
+
+  it('rejects blank admin key patches without writing config', async () => {
+    adminAuthState.valid = true
+    const handler = await loadRoute('../server/api/admin/config.patch')
+    const event = { body: { admin_key: '' } }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 400)
+    expect(result).toEqual({
+      error: {
+        message: 'Invalid config field: admin_key',
+        code: 'invalid_config_patch',
+      },
+    })
+    expect(fsState.writeFileSync).not.toHaveBeenCalled()
+    expect(fsState.renameSync).not.toHaveBeenCalled()
+    expect(configState.resetConfigCache).not.toHaveBeenCalled()
+  })
+
+  it('rejects invalid known config patch field values without writing config', async () => {
+    adminAuthState.valid = true
+    const handler = await loadRoute('../server/api/admin/config.patch')
+    const event = { body: { server: { port: 'abc' } } }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 400)
+    expect(result).toEqual({
+      error: {
+        message: 'Invalid config field: server.port',
+        code: 'invalid_config_patch',
+      },
+    })
+    expect(fsState.writeFileSync).not.toHaveBeenCalled()
+    expect(fsState.renameSync).not.toHaveBeenCalled()
+    expect(configState.resetConfigCache).not.toHaveBeenCalled()
+  })
+
+  it('removes the temp file when config rename fails', async () => {
+    const renameError = new Error('rename failed')
+    fsState.renameSync.mockImplementationOnce(() => {
+      throw renameError
+    })
+    const { writeConfig } = await import('../server/utils/admin-config')
+
+    expect(() => writeConfig(testConfig())).toThrow(renameError)
+
+    const [tempPath, yaml, options] = fsState.writeFileSync.mock.calls[0]
+    expect(options).toEqual({ encoding: 'utf-8', mode: 0o600 })
+    expect(loadYaml(yaml as string)).toMatchObject(testConfig())
+    expect(fsState.unlinkSync).toHaveBeenCalledWith(tempPath)
     expect(configState.resetConfigCache).not.toHaveBeenCalled()
   })
 })
