@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   transactionCalls: 0,
   operations: [] as Array<Record<string, any>>,
   failInsert: false,
+  failSelect: false,
 }))
 
 vi.mock('../server/utils/api-auth', () => ({
@@ -34,6 +35,7 @@ vi.mock('../server/db', () => {
   }
 
   function rowsFor(table: any) {
+    if (state.failSelect) throw new Error('database read path leaked')
     if (table === schema.accounts) return state.accounts
     if (table === schema.tasks) return state.tasks
     return []
@@ -172,6 +174,7 @@ function resetState() {
   state.transactionCalls = 0
   state.operations = []
   state.failInsert = false
+  state.failSelect = false
 }
 
 describe('admin account token pool API', () => {
@@ -229,6 +232,22 @@ describe('admin account token pool API', () => {
     })
     expect((result as any).data[0]).not.toHaveProperty('accessToken')
     expect((result as any).data[0]).not.toHaveProperty('refreshToken')
+  })
+
+  it('returns structured 500 JSON when account list reads fail unexpectedly', async () => {
+    state.failSelect = true
+    const handler = await loadRoute('../server/api/admin/accounts/index.get')
+    const event = {}
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 500)
+    expect(result).toEqual({
+      error: {
+        message: 'Admin database operation failed',
+        code: 'admin_database_failed',
+      },
+    })
   })
 
   it('creates, clears token fields on update, and deletes accounts', async () => {

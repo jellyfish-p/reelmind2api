@@ -31,6 +31,22 @@ export function adminInternalError(
   return adminError(event, 500, message, code)
 }
 
+export function adminPersistenceError(event: any): AdminError {
+  return adminInternalError(
+    event,
+    'Admin persistence failed',
+    'admin_persistence_failed',
+  )
+}
+
+export function adminDatabaseError(event: any): AdminError {
+  return adminInternalError(
+    event,
+    'Admin database operation failed',
+    'admin_database_failed',
+  )
+}
+
 function adminErrorBody(message: string, code: string): AdminError {
   return { error: { message, code } }
 }

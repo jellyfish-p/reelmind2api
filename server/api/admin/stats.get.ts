@@ -1,4 +1,8 @@
-import { requireAdmin } from '../../utils/admin-response'
+import {
+  adminDatabaseError,
+  adminPersistenceError,
+  requireAdmin,
+} from '../../utils/admin-response'
 import { countBy, sumCredits } from '../../utils/admin-tasks'
 import { loadConfig } from '../../utils/config'
 import { getDb, schema } from '../../db'
@@ -12,23 +16,36 @@ export default defineEventHandler(async (event) => {
   const authError = await requireAdmin(event)
   if (authError) return authError
 
-  const db = getDb()
-  const tasks = db
-    .select({
-      createdAt: schema.tasks.createdAt,
-      status: schema.tasks.status,
-      type: schema.tasks.type,
-      creditsUsed: schema.tasks.creditsUsed,
-    })
-    .from(schema.tasks)
-    .all() as StatsTask[]
-  const accounts = db
-    .select({
-      tokenExpiresAt: schema.accounts.tokenExpiresAt,
-    })
-    .from(schema.accounts)
-    .all() as StatsAccount[]
-  const apiKeys = loadConfig().api_keys
+  let tasks: StatsTask[]
+  let accounts: StatsAccount[]
+  try {
+    const db = getDb()
+    tasks = db
+      .select({
+        createdAt: schema.tasks.createdAt,
+        status: schema.tasks.status,
+        type: schema.tasks.type,
+        creditsUsed: schema.tasks.creditsUsed,
+      })
+      .from(schema.tasks)
+      .all() as StatsTask[]
+    accounts = db
+      .select({
+        tokenExpiresAt: schema.accounts.tokenExpiresAt,
+      })
+      .from(schema.accounts)
+      .all() as StatsAccount[]
+  } catch {
+    return adminDatabaseError(event)
+  }
+
+  let apiKeys: unknown
+  try {
+    apiKeys = loadConfig().api_keys
+  } catch {
+    return adminPersistenceError(event)
+  }
+
   const now = Date.now()
   const recentSince = now - RECENT_TASK_WINDOW_MS
 

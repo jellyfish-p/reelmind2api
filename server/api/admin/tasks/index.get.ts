@@ -1,4 +1,7 @@
-import { requireAdmin } from '../../../utils/admin-response'
+import {
+  adminDatabaseError,
+  requireAdmin,
+} from '../../../utils/admin-response'
 import {
   paginationMetadata,
   parsePagination,
@@ -17,22 +20,26 @@ export default defineEventHandler(async (event) => {
   const filters = parseTaskFilters(query)
   const pagination = parsePagination(query)
   const where = taskFilterWhere(filters)
-  const db = getDb()
 
-  const countQuery = db.select({ total: count() }).from(schema.tasks) as any
-  const totalRow = (where ? countQuery.where(where) : countQuery).get()
+  try {
+    const db = getDb()
+    const countQuery = db.select({ total: count() }).from(schema.tasks) as any
+    const totalRow = (where ? countQuery.where(where) : countQuery).get()
 
-  const taskQuery = db.select().from(schema.tasks) as any
-  const scopedTaskQuery = where ? taskQuery.where(where) : taskQuery
-  const tasks = scopedTaskQuery
-    .orderBy(desc(schema.tasks.createdAt), desc(schema.tasks.id))
-    .limit(pagination.limit)
-    .offset(pagination.offset)
-    .all()
+    const taskQuery = db.select().from(schema.tasks) as any
+    const scopedTaskQuery = where ? taskQuery.where(where) : taskQuery
+    const tasks = scopedTaskQuery
+      .orderBy(desc(schema.tasks.createdAt), desc(schema.tasks.id))
+      .limit(pagination.limit)
+      .offset(pagination.offset)
+      .all()
 
-  return {
-    data: tasks.map((task: any) => summarizeTask(task)),
-    pagination: paginationMetadata(pagination, Number(totalRow?.total ?? 0)),
+    return {
+      data: tasks.map((task: any) => summarizeTask(task)),
+      pagination: paginationMetadata(pagination, Number(totalRow?.total ?? 0)),
+    }
+  } catch {
+    return adminDatabaseError(event)
   }
 })
 

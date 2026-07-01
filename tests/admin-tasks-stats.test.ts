@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   apiKeys: [] as Array<Record<string, any>>,
   configLoads: 0,
   operations: [] as Array<Record<string, any>>,
+  failSelect: false,
 }))
 
 vi.mock('../server/utils/api-auth', () => ({
@@ -102,6 +103,7 @@ vi.mock('../server/db', () => {
   }
 
   function rowsFor(table: any) {
+    if (state.failSelect) throw new Error('database read path leaked')
     if (table === schema.accounts) return state.accounts
     if (table === schema.tasks) return state.tasks
     throw new Error('Unexpected table in admin task test')
@@ -339,6 +341,7 @@ describe('admin task logs API', () => {
     state.apiKeys = []
     state.configLoads = 0
     state.operations = []
+    state.failSelect = false
     vi.stubGlobal('defineEventHandler', (handler: RouteHandler) => handler)
     vi.stubGlobal('setResponseStatus', vi.fn())
     vi.stubGlobal('getQuery', (event: any) => event.query ?? {})
@@ -393,6 +396,22 @@ describe('admin task logs API', () => {
     expect(state.operations).toContainEqual({ type: 'offset', value: 0 })
     expect((result as any).data[0]).not.toHaveProperty('parameters')
     expect((result as any).data[0]).not.toHaveProperty('resultData')
+  })
+
+  it('returns structured 500 JSON when task log reads fail unexpectedly', async () => {
+    state.failSelect = true
+    const handler = await loadRoute('../server/api/admin/tasks/index.get')
+    const event = { query: {} }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 500)
+    expect(result).toEqual({
+      error: {
+        message: 'Admin database operation failed',
+        code: 'admin_database_failed',
+      },
+    })
   })
 
   it('orders newest first with id tie-break and paginates page 2', async () => {
@@ -632,6 +651,7 @@ describe('admin stats API', () => {
     ]
     state.configLoads = 0
     state.operations = []
+    state.failSelect = false
     vi.stubGlobal('defineEventHandler', (handler: RouteHandler) => handler)
     vi.stubGlobal('setResponseStatus', vi.fn())
   })
@@ -681,6 +701,23 @@ describe('admin stats API', () => {
         selectedFields: ['tokenExpiresAt'],
       }),
     )
+  })
+
+  it('returns structured 500 JSON when stats reads fail unexpectedly', async () => {
+    state.failSelect = true
+    const handler = await loadRoute('../server/api/admin/stats.get')
+    const event = {}
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 500)
+    expect(result).toEqual({
+      error: {
+        message: 'Admin database operation failed',
+        code: 'admin_database_failed',
+      },
+    })
+    expect(state.configLoads).toBe(0)
   })
 
   it('rejects stats reads without a valid admin key', async () => {

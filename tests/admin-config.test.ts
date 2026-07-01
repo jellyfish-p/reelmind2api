@@ -163,6 +163,25 @@ describe('admin config API', () => {
     ])
   })
 
+  it('returns structured 500 JSON when config reads fail unexpectedly', async () => {
+    adminAuthState.valid = true
+    configState.loadConfig.mockImplementationOnce(() => {
+      throw new Error('raw config read failure')
+    })
+    const handler = await loadRoute('../server/api/admin/config.get')
+    const event = {}
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 500)
+    expect(result).toEqual({
+      error: {
+        message: 'Admin persistence failed',
+        code: 'admin_persistence_failed',
+      },
+    })
+  })
+
   it('omits unknown top-level and nested config fields from authenticated admin reads', async () => {
     adminAuthState.valid = true
     configState.current = {
@@ -329,6 +348,25 @@ describe('admin config API', () => {
           enabled: false,
         },
       ],
+    })
+  })
+
+  it('returns structured 500 JSON when API key list reads fail unexpectedly', async () => {
+    adminAuthState.valid = true
+    configState.loadConfig.mockImplementationOnce(() => {
+      throw new Error('raw api key config read failure')
+    })
+    const handler = await loadRoute('../server/api/admin/api-keys/index.get')
+    const event = {}
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 500)
+    expect(result).toEqual({
+      error: {
+        message: 'Admin persistence failed',
+        code: 'admin_persistence_failed',
+      },
     })
   })
 

@@ -1,5 +1,9 @@
 import { eq } from 'drizzle-orm'
-import { adminError, requireAdmin } from '../../../utils/admin-response'
+import {
+  adminDatabaseError,
+  adminError,
+  requireAdmin,
+} from '../../../utils/admin-response'
 import { parseAccountId, sanitizeAccount } from '../../../utils/admin-accounts'
 import { getDb, schema } from '../../../db'
 
@@ -12,22 +16,26 @@ export default defineEventHandler(async (event) => {
     return adminError(event, 404, 'Account not found', 'account_not_found')
   }
 
-  const db = getDb()
-  const account = db
-    .select()
-    .from(schema.accounts)
-    .where(eq(schema.accounts.id, id))
-    .get()
+  try {
+    const db = getDb()
+    const account = db
+      .select()
+      .from(schema.accounts)
+      .where(eq(schema.accounts.id, id))
+      .get()
 
-  if (!account) {
-    return adminError(event, 404, 'Account not found', 'account_not_found')
+    if (!account) {
+      return adminError(event, 404, 'Account not found', 'account_not_found')
+    }
+
+    const tasks = db
+      .select()
+      .from(schema.tasks)
+      .where(eq(schema.tasks.accountId, id))
+      .all()
+
+    return sanitizeAccount(account as any, tasks as any[])
+  } catch {
+    return adminDatabaseError(event)
   }
-
-  const tasks = db
-    .select()
-    .from(schema.tasks)
-    .where(eq(schema.tasks.accountId, id))
-    .all()
-
-  return sanitizeAccount(account as any, tasks as any[])
 })
