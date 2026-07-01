@@ -1,0 +1,38 @@
+# ReelMind2API Configuration
+# ============================
+
+server:
+  port: 3000
+  host: "0.0.0.0"
+
+# 管理员密钥 - 用于前端管理面板
+admin_key: "admin-reelmind-change-me-please"
+
+# API 访问密钥列表 - 用于 API 代理访问
+api_keys:
+  - key: "sk-reelmind-default-key-change-me"
+    name: "默认密钥"
+    quota: 10000
+    rate_limit: 60
+    enabled: true
+
+# ReelMind API 设置
+reelmind:
+  api_base: "https://nestapi.reelmind.ai"
+  web_base: "https://reelmind.ai"
+  # Google OAuth 客户端ID（用于用户认证）
+  google_client_id: ""
+
+# 数据库
+database:
+  # SQLite 数据库文件路径
+  path: "./data/reelmind.db"
+
+# 轮询设置
+polling:
+  # 任务状态轮询间隔（毫秒）
+  interval: 5000
+  # 轮询最大重试次数
+  max_retries: 120
+  # 令牌自动刷新提前量（秒）
+  token_refresh_margin: 300
