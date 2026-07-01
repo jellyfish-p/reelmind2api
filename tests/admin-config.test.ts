@@ -58,7 +58,7 @@ function testConfig() {
     admin_key: 'admin-secret-1234',
     api_keys: [
       {
-        key: 'sk-test-key-123456',
+        key: 'sk-local-admin-key',
         name: 'Primary',
         quota: 100,
         rate_limit: 60,
@@ -84,6 +84,12 @@ function testConfig() {
       token_refresh_margin: 300,
     },
   }
+}
+
+function lastWrittenConfig() {
+  const lastWrite = fsState.writeFileSync.mock.calls.at(-1)
+  expect(lastWrite).toBeDefined()
+  return loadYaml(lastWrite![1] as string) as any
 }
 
 function sanitizedConfig(overrides: any = {}) {
@@ -142,7 +148,7 @@ describe('admin config API', () => {
     expect(result).toEqual(sanitizedConfig())
     expect((result as any).admin_key).toBe('admi***1234')
     expect((result as any).api_keys.map((apiKey: any) => apiKey.key)).toEqual([
-      'sk-t***3456',
+      'sk-l***-key',
       '***',
     ])
   })
@@ -187,7 +193,292 @@ describe('admin config API', () => {
         token_refresh_margin: 300,
       },
     })
-    expect(writtenConfig.api_keys[0].key).toBe('sk-test-key-123456')
+    expect(writtenConfig.api_keys[0].key).toBe('sk-local-admin-key')
+  })
+
+  it('rejects admin API key list reads without a valid admin key', async () => {
+    const handler = await loadRoute('../server/api/admin/api-keys/index.get')
+
+    const result = await handler({})
+
+    expect(setResponseStatus).toHaveBeenCalledWith({}, 401)
+    expect(result).toEqual({
+      error: {
+        message: 'Invalid admin key',
+        code: 'invalid_admin_key',
+      },
+    })
+  })
+
+  it('lists sanitized API keys for authenticated admins', async () => {
+    adminAuthState.valid = true
+    const handler = await loadRoute('../server/api/admin/api-keys/index.get')
+
+    const result = await handler({})
+
+    expect(result).toEqual({
+      data: [
+        {
+          key: 'sk-l***-key',
+          name: 'Primary',
+          quota: 100,
+          rate_limit: 60,
+          enabled: true,
+        },
+        {
+          key: '***',
+          name: 'Short',
+          quota: 0,
+          rate_limit: 10,
+          enabled: false,
+        },
+      ],
+    })
+  })
+
+  it('creates API keys, persists the raw key, and returns the sanitized entry', async () => {
+    adminAuthState.valid = true
+    const handler = await loadRoute('../server/api/admin/api-keys/index.post')
+    const event = {
+      body: {
+        key: ' sk-created-key ',
+        name: ' Created key ',
+        quota: 250,
+        rate_limit: 25,
+        enabled: true,
+      },
+    }
+
+    const result = await handler(event)
+
+    expect(result).toEqual({
+      key: 'sk-c***-key',
+      name: 'Created key',
+      quota: 250,
+      rate_limit: 25,
+      enabled: true,
+    })
+    expect(fsState.writeFileSync).toHaveBeenCalledOnce()
+    expect(configState.resetConfigCache).toHaveBeenCalledOnce()
+
+    const writtenConfig = lastWrittenConfig()
+    expect(writtenConfig.api_keys).toContainEqual({
+      key: 'sk-created-key',
+      name: 'Created key',
+      quota: 250,
+      rate_limit: 25,
+      enabled: true,
+    })
+  })
+
+  it('rejects duplicate API key creation with a 409 response', async () => {
+    adminAuthState.valid = true
+    const handler = await loadRoute('../server/api/admin/api-keys/index.post')
+    const event = {
+      body: {
+        key: 'sk-local-admin-key',
+        name: 'Duplicate',
+        quota: 1,
+        rate_limit: 1,
+        enabled: true,
+      },
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 409)
+    expect(result).toEqual({
+      error: {
+        message: 'API key already exists',
+        code: 'duplicate_api_key',
+      },
+    })
+    expect(fsState.writeFileSync).not.toHaveBeenCalled()
+    expect(fsState.renameSync).not.toHaveBeenCalled()
+    expect(configState.resetConfigCache).not.toHaveBeenCalled()
+  })
+
+  it('rejects invalid API key creation payloads with a 400 response', async () => {
+    adminAuthState.valid = true
+    const handler = await loadRoute('../server/api/admin/api-keys/index.post')
+    const event = {
+      body: {
+        key: '',
+        name: 'Missing key',
+        quota: 1,
+        rate_limit: 1,
+        enabled: true,
+      },
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 400)
+    expect(result).toEqual({
+      error: {
+        message: 'Invalid API key field: key',
+        code: 'invalid_api_key',
+      },
+    })
+    expect(fsState.writeFileSync).not.toHaveBeenCalled()
+    expect(fsState.renameSync).not.toHaveBeenCalled()
+    expect(configState.resetConfigCache).not.toHaveBeenCalled()
+  })
+
+  it('updates API keys by decoded path key, supports key replacement, and returns the sanitized entry', async () => {
+    adminAuthState.valid = true
+    configState.current = {
+      ...testConfig(),
+      api_keys: [
+        ...testConfig().api_keys,
+        {
+          key: 'sk-created-key',
+          name: 'Created key',
+          quota: 250,
+          rate_limit: 25,
+          enabled: true,
+        },
+      ],
+    }
+    const handler = await loadRoute('../server/api/admin/api-keys/[key].patch')
+    const event = {
+      params: { key: encodeURIComponent('sk-created-key') },
+      body: {
+        key: 'sk-renamed-key',
+        name: 'Renamed key',
+        quota: 300,
+        rate_limit: 30,
+        enabled: false,
+      },
+    }
+
+    const result = await handler(event)
+
+    expect(result).toEqual({
+      key: 'sk-r***-key',
+      name: 'Renamed key',
+      quota: 300,
+      rate_limit: 30,
+      enabled: false,
+    })
+
+    const writtenConfig = lastWrittenConfig()
+    expect(writtenConfig.api_keys).not.toContainEqual(
+      expect.objectContaining({ key: 'sk-created-key' }),
+    )
+    expect(writtenConfig.api_keys).toContainEqual({
+      key: 'sk-renamed-key',
+      name: 'Renamed key',
+      quota: 300,
+      rate_limit: 30,
+      enabled: false,
+    })
+  })
+
+  it('rejects API key replacements that conflict with existing keys', async () => {
+    adminAuthState.valid = true
+    configState.current = {
+      ...testConfig(),
+      api_keys: [
+        ...testConfig().api_keys,
+        {
+          key: 'sk-created-key',
+          name: 'Created key',
+          quota: 250,
+          rate_limit: 25,
+          enabled: true,
+        },
+      ],
+    }
+    const handler = await loadRoute('../server/api/admin/api-keys/[key].patch')
+    const event = {
+      params: { key: encodeURIComponent('sk-created-key') },
+      body: {
+        key: 'sk-local-admin-key',
+      },
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 409)
+    expect(result).toEqual({
+      error: {
+        message: 'API key already exists',
+        code: 'duplicate_api_key',
+      },
+    })
+    expect(fsState.writeFileSync).not.toHaveBeenCalled()
+    expect(fsState.renameSync).not.toHaveBeenCalled()
+    expect(configState.resetConfigCache).not.toHaveBeenCalled()
+  })
+
+  it('returns a 404 response when updating a missing API key', async () => {
+    adminAuthState.valid = true
+    const handler = await loadRoute('../server/api/admin/api-keys/[key].patch')
+    const event = {
+      params: { key: encodeURIComponent('sk-missing-key') },
+      body: { name: 'Still missing' },
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 404)
+    expect(result).toEqual({
+      error: {
+        message: 'API key not found',
+        code: 'api_key_not_found',
+      },
+    })
+    expect(fsState.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it('deletes API keys by decoded path key without touching token rows', async () => {
+    adminAuthState.valid = true
+    configState.current = {
+      ...testConfig(),
+      api_keys: [
+        ...testConfig().api_keys,
+        {
+          key: 'sk-created-key',
+          name: 'Created key',
+          quota: 250,
+          rate_limit: 25,
+          enabled: true,
+        },
+      ],
+    }
+    const handler = await loadRoute('../server/api/admin/api-keys/[key].delete')
+    const event = {
+      params: { key: encodeURIComponent('sk-created-key') },
+    }
+
+    const result = await handler(event)
+
+    expect(result).toEqual({ deleted: true })
+    const writtenConfig = lastWrittenConfig()
+    expect(writtenConfig.api_keys).not.toContainEqual(
+      expect.objectContaining({ key: 'sk-created-key' }),
+    )
+    expect(writtenConfig).not.toHaveProperty('api_tokens')
+  })
+
+  it('returns a 404 response when deleting a missing API key', async () => {
+    adminAuthState.valid = true
+    const handler = await loadRoute('../server/api/admin/api-keys/[key].delete')
+    const event = {
+      params: { key: encodeURIComponent('sk-missing-key') },
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 404)
+    expect(result).toEqual({
+      error: {
+        message: 'API key not found',
+        code: 'api_key_not_found',
+      },
+    })
+    expect(fsState.writeFileSync).not.toHaveBeenCalled()
   })
 
   it('rejects unknown top-level config patch fields', async () => {
