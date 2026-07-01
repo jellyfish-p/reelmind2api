@@ -5,26 +5,184 @@ type RouteHandler = (event: any) => Promise<unknown>
 const state = vi.hoisted(() => ({
   validAdmin: true,
   tasks: [] as Array<Record<string, any>>,
+  operations: [] as Array<Record<string, any>>,
 }))
 
 vi.mock('../server/utils/api-auth', () => ({
   authenticateAdmin: vi.fn(async () => state.validAdmin),
 }))
 
+vi.mock('drizzle-orm', () => {
+  function condition(
+    op: string,
+    column: { key: string },
+    value: unknown,
+    matches: (row: Record<string, any>) => boolean,
+  ) {
+    return Object.assign(matches, {
+      meta: { op, key: column.key, value },
+    })
+  }
+
+  return {
+    and: vi.fn((...conditions: Array<any>) => {
+      const activeConditions = conditions.filter(Boolean)
+      return Object.assign(
+        (row: Record<string, any>) =>
+          activeConditions.every((predicate) => predicate(row)),
+        {
+          meta: {
+            op: 'and',
+            conditions: activeConditions.map((predicate) => predicate.meta),
+          },
+        },
+      )
+    }),
+    count: vi.fn(() => ({ kind: 'count' })),
+    desc: vi.fn((column: { key: string }) => ({
+      direction: 'desc',
+      key: column.key,
+    })),
+    eq: vi.fn((column: { key: string }, value: unknown) =>
+      condition(
+        'eq',
+        column,
+        value,
+        (row: Record<string, any>) => row[column.key] === value,
+      ),
+    ),
+    gte: vi.fn((column: { key: string }, value: unknown) =>
+      condition(
+        'gte',
+        column,
+        value,
+        (row: Record<string, any>) => row[column.key] >= value,
+      ),
+    ),
+    lte: vi.fn((column: { key: string }, value: unknown) =>
+      condition(
+        'lte',
+        column,
+        value,
+        (row: Record<string, any>) => row[column.key] <= value,
+      ),
+    ),
+  }
+})
+
 vi.mock('../server/db', () => {
   const schema = {
     tasks: {
       id: { key: 'id' },
       taskId: { key: 'taskId' },
+      status: { key: 'status' },
+      type: { key: 'type' },
+      model: { key: 'model' },
+      accountId: { key: 'accountId' },
+      apiTokenId: { key: 'apiTokenId' },
+      createdAt: { key: 'createdAt' },
     },
   }
 
+  function rowsFor(table: any) {
+    if (table === schema.tasks) return state.tasks
+    throw new Error('Unexpected table in admin task test')
+  }
+
+  function tableName(table: any) {
+    if (table === schema.tasks) return 'tasks'
+    return 'unknown'
+  }
+
+  function createSelectBuilder(selection?: Record<string, any>) {
+    let selectedTable: any
+    let predicate: ((row: Record<string, any>) => boolean) | undefined
+    let orders: Array<{ direction: string; key: string }> = []
+    let selectedLimit: number | undefined
+    let selectedOffset = 0
+
+    function filteredRows() {
+      const rows = predicate
+        ? rowsFor(selectedTable).filter((row) => predicate?.(row))
+        : [...rowsFor(selectedTable)]
+
+      if (orders.length > 0) {
+        rows.sort((left, right) => {
+          for (const order of orders) {
+            if (left[order.key] === right[order.key]) continue
+            if (order.direction === 'desc') {
+              return left[order.key] > right[order.key] ? -1 : 1
+            }
+            return left[order.key] > right[order.key] ? 1 : -1
+          }
+          return 0
+        })
+      }
+
+      const start = selectedOffset
+      const end =
+        selectedLimit === undefined ? undefined : selectedOffset + selectedLimit
+      return rows.slice(start, end)
+    }
+
+    const builder = {
+      from: vi.fn((table: any) => {
+        selectedTable = table
+        return builder
+      }),
+      where: vi.fn((condition: (row: Record<string, any>) => boolean) => {
+        predicate = condition
+        state.operations.push({ type: 'where', meta: (condition as any).meta })
+        return builder
+      }),
+      orderBy: vi.fn((...selectedOrders: Array<{ direction: string; key: string }>) => {
+        orders = selectedOrders
+        state.operations.push({ type: 'orderBy', orders })
+        return builder
+      }),
+      limit: vi.fn((value: number) => {
+        selectedLimit = value
+        state.operations.push({ type: 'limit', value })
+        return builder
+      }),
+      offset: vi.fn((value: number) => {
+        selectedOffset = value
+        state.operations.push({ type: 'offset', value })
+        return builder
+      }),
+      all: vi.fn(() => {
+        state.operations.push({
+          type: 'all',
+          table: tableName(selectedTable),
+          filtered: Boolean(predicate),
+          ordered: orders.length > 0,
+          limit: selectedLimit,
+          offset: selectedOffset,
+        })
+        return filteredRows()
+      }),
+      get: vi.fn(() => {
+        state.operations.push({
+          type: 'get',
+          table: tableName(selectedTable),
+          filtered: Boolean(predicate),
+          selection: selection?.total?.kind === 'count' ? 'count' : 'row',
+        })
+        if (selection?.total?.kind === 'count') {
+          const rows = predicate
+            ? rowsFor(selectedTable).filter((row) => predicate?.(row))
+            : rowsFor(selectedTable)
+          return { total: rows.length }
+        }
+        return filteredRows()[0]
+      }),
+    }
+
+    return builder
+  }
+
   const db = {
-    select: vi.fn(() => ({
-      from: vi.fn((table: any) => ({
-        all: vi.fn(() => (table === schema.tasks ? state.tasks : [])),
-      })),
-    })),
+    select: vi.fn((selection?: Record<string, any>) => createSelectBuilder(selection)),
   }
 
   return {
@@ -136,6 +294,7 @@ describe('admin task logs API', () => {
     vi.clearAllMocks()
     state.validAdmin = true
     state.tasks = taskRows()
+    state.operations = []
     vi.stubGlobal('defineEventHandler', (handler: RouteHandler) => handler)
     vi.stubGlobal('setResponseStatus', vi.fn())
     vi.stubGlobal('getQuery', (event: any) => event.query ?? {})
@@ -155,30 +314,67 @@ describe('admin task logs API', () => {
     expect(result).toEqual({
       data: [
         {
-          id: 1,
-          taskId: 'task-public-1',
-          object: 'video.generation',
-          model: 'reelmind-video-v1',
-          type: 'video',
-          prompt: 'A cinematic harbor at sunrise',
+          id: 2,
+          taskId: 'task-public-2',
+          object: 'image.generation',
+          model: 'reelmind-image-v1',
+          type: 'image',
+          prompt: 'A neon market in the rain',
           status: 'completed',
           progress: 100,
-          resultUrl: 'https://cdn.example.test/harbor.mp4',
+          resultUrl: 'https://cdn.example.test/market.png',
           errorMessage: null,
-          reelmindTaskId: 'rm-task-1',
+          reelmindTaskId: 'rm-task-2',
           apiTokenId: 42,
-          accountId: 7,
-          creditsUsed: 3,
-          pollCount: 4,
-          createdAt: 1_700_000_000_000,
-          updatedAt: 1_700_000_010_000,
-          completedAt: 1_700_000_020_000,
+          accountId: 8,
+          creditsUsed: 1,
+          pollCount: 2,
+          createdAt: 1_700_000_100_000,
+          updatedAt: 1_700_000_110_000,
+          completedAt: 1_700_000_120_000,
         },
       ],
       pagination: { page: 1, limit: 1, total: 2 },
     })
+    expect(state.operations).toContainEqual(
+      expect.objectContaining({
+        type: 'orderBy',
+        orders: [
+          { direction: 'desc', key: 'createdAt' },
+          { direction: 'desc', key: 'id' },
+        ],
+      }),
+    )
+    expect(state.operations).toContainEqual({ type: 'limit', value: 1 })
+    expect(state.operations).toContainEqual({ type: 'offset', value: 0 })
     expect((result as any).data[0]).not.toHaveProperty('parameters')
     expect((result as any).data[0]).not.toHaveProperty('resultData')
+  })
+
+  it('orders newest first with id tie-break and paginates page 2', async () => {
+    const base = taskRows()[0]
+    state.tasks = [
+      { ...base, id: 1, taskId: 'oldest', createdAt: 100, updatedAt: 100 },
+      { ...base, id: 4, taskId: 'tie-low', createdAt: 300, updatedAt: 300 },
+      { ...base, id: 5, taskId: 'tie-high', createdAt: 300, updatedAt: 300 },
+      { ...base, id: 6, taskId: 'newest', createdAt: 400, updatedAt: 400 },
+    ]
+    const handler = await loadRoute('../server/api/admin/tasks/index.get')
+
+    const page1 = await handler({ query: { page: '1', limit: '2' } })
+    state.operations = []
+    const page2 = await handler({ query: { page: '2', limit: '2' } })
+
+    expect((page1 as any).data.map((task: any) => task.taskId)).toEqual([
+      'newest',
+      'tie-high',
+    ])
+    expect(page2).toMatchObject({
+      data: [{ taskId: 'tie-low' }, { taskId: 'oldest' }],
+      pagination: { page: 2, limit: 2, total: 4 },
+    })
+    expect(state.operations).toContainEqual({ type: 'limit', value: 2 })
+    expect(state.operations).toContainEqual({ type: 'offset', value: 2 })
   })
 
   it('applies model, type, account, token, and creation window filters', async () => {
@@ -208,6 +404,22 @@ describe('admin task logs API', () => {
         },
       ],
       pagination: { page: 1, limit: 20, total: 1 },
+    })
+    expect(state.operations.some((operation) => operation.type === 'where')).toBe(
+      true,
+    )
+    expect(state.operations).toContainEqual({ type: 'limit', value: 20 })
+    expect(state.operations).toContainEqual({ type: 'offset', value: 0 })
+  })
+
+  it('does not floor decimal account id filters into matches', async () => {
+    const handler = await loadRoute('../server/api/admin/tasks/index.get')
+
+    const result = await handler({ query: { account_id: '7.9' } })
+
+    expect(result).toEqual({
+      data: [],
+      pagination: { page: 1, limit: 20, total: 0 },
     })
   })
 
@@ -250,6 +462,53 @@ describe('admin task logs API', () => {
       parameters: { size: '1024x1024' },
       resultData: { url: 'https://cdn.example.test/market.png' },
     })
+    expect(state.operations).toContainEqual(
+      expect.objectContaining({
+        type: 'where',
+        meta: { op: 'eq', key: 'taskId', value: '2' },
+      }),
+    )
+    expect(state.operations).toContainEqual(
+      expect.objectContaining({
+        type: 'where',
+        meta: { op: 'eq', key: 'id', value: 2 },
+      }),
+    )
+    expect(state.operations.some((operation) => operation.type === 'all')).toBe(
+      false,
+    )
+  })
+
+  it('prefers exact public task ids over numeric local ids', async () => {
+    const [localTask, publicNumericTask] = taskRows()
+    state.tasks = [
+      { ...localTask, id: 1, taskId: 'local-id-1' },
+      { ...publicNumericTask, id: 99, taskId: '1', prompt: 'Public numeric id' },
+    ]
+    const handler = await loadRoute('../server/api/admin/tasks/[id].get')
+
+    const result = await handler({ params: { id: '1' } })
+
+    expect(result).toMatchObject({
+      id: 99,
+      taskId: '1',
+      prompt: 'Public numeric id',
+    })
+    expect(state.operations).toContainEqual(
+      expect.objectContaining({
+        type: 'where',
+        meta: { op: 'eq', key: 'taskId', value: '1' },
+      }),
+    )
+    expect(state.operations).not.toContainEqual(
+      expect.objectContaining({
+        type: 'where',
+        meta: { op: 'eq', key: 'id', value: 1 },
+      }),
+    )
+    expect(state.operations.some((operation) => operation.type === 'all')).toBe(
+      false,
+    )
   })
 
   it('returns 404 for missing task details', async () => {

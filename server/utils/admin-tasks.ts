@@ -11,6 +11,13 @@ export type TaskFilters = {
   apiTokenId?: number
   createdFrom?: number
   createdTo?: number
+  invalidIdFilter?: boolean
+}
+
+export type TaskPagination = {
+  page: number
+  limit: number
+  offset: number
 }
 
 export type TaskSummary = {
@@ -56,11 +63,13 @@ export function parseTaskFilters(query: Query): TaskFilters {
   const model = stringFilter(query.model)
   if (model) filters.model = model
 
-  const accountId = positiveFilter(query.account_id)
-  if (accountId !== null) filters.accountId = accountId
+  const accountId = strictPositiveIntegerFilter(query.account_id)
+  if (accountId === false) filters.invalidIdFilter = true
+  if (typeof accountId === 'number') filters.accountId = accountId
 
-  const apiTokenId = positiveFilter(query.api_token_id)
-  if (apiTokenId !== null) filters.apiTokenId = apiTokenId
+  const apiTokenId = strictPositiveIntegerFilter(query.api_token_id)
+  if (apiTokenId === false) filters.invalidIdFilter = true
+  if (typeof apiTokenId === 'number') filters.apiTokenId = apiTokenId
 
   const createdFrom = timeFilter(query.created_from)
   if (createdFrom !== null) filters.createdFrom = createdFrom
@@ -72,6 +81,7 @@ export function parseTaskFilters(query: Query): TaskFilters {
 }
 
 export function matchesTaskFilters(task: Task, filters: TaskFilters): boolean {
+  if (filters.invalidIdFilter) return false
   if (filters.status && task.status !== filters.status) return false
   if (filters.type && task.type !== filters.type) return false
   if (filters.model && task.model !== filters.model) return false
@@ -95,9 +105,7 @@ export function matchesTaskFilters(task: Task, filters: TaskFilters): boolean {
 }
 
 export function paginate<T>(items: T[], query: Query) {
-  const page = positiveInt(query.page, 1)
-  const limit = positiveInt(query.limit, 20, 100)
-  const offset = (page - 1) * limit
+  const { page, limit, offset } = parsePagination(query)
 
   return {
     items: items.slice(offset, offset + limit),
@@ -106,6 +114,25 @@ export function paginate<T>(items: T[], query: Query) {
       limit,
       total: items.length,
     },
+  }
+}
+
+export function parsePagination(query: Query): TaskPagination {
+  const page = positiveInt(query.page, 1)
+  const limit = positiveInt(query.limit, 20, 100)
+
+  return {
+    page,
+    limit,
+    offset: (page - 1) * limit,
+  }
+}
+
+export function paginationMetadata(pagination: TaskPagination, total: number) {
+  return {
+    page: pagination.page,
+    limit: pagination.limit,
+    total,
   }
 }
 
@@ -152,9 +179,31 @@ function stringFilter(value: unknown): string | null {
   return trimmed || null
 }
 
-function positiveFilter(value: unknown): number | null {
-  const parsed = positiveInt(firstValue(value), 0)
-  return parsed > 0 ? parsed : null
+export function parseLocalTaskId(value: unknown): number | null {
+  return parseStrictPositiveInteger(value)
+}
+
+function strictPositiveIntegerFilter(value: unknown): number | null | false {
+  const raw = firstValue(value)
+  if (raw === null || raw === undefined) return null
+  if (typeof raw === 'string' && raw.trim() === '') return null
+
+  const parsed = parseStrictPositiveInteger(raw)
+  return parsed === null ? false : parsed
+}
+
+function parseStrictPositiveInteger(value: unknown): number | null {
+  const raw = firstValue(value)
+  if (typeof raw === 'number') {
+    return Number.isSafeInteger(raw) && raw > 0 ? raw : null
+  }
+  if (typeof raw !== 'string') return null
+
+  const trimmed = raw.trim()
+  if (!/^\d+$/.test(trimmed)) return null
+
+  const parsed = Number(trimmed)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
 }
 
 function timeFilter(value: unknown): number | null {

@@ -1,6 +1,7 @@
 import { adminError, requireAdmin } from '../../../utils/admin-response'
-import { detailTask } from '../../../utils/admin-tasks'
+import { detailTask, parseLocalTaskId } from '../../../utils/admin-tasks'
 import { getDb, schema } from '../../../db'
+import { eq } from 'drizzle-orm'
 
 export default defineEventHandler(async (event) => {
   const authError = await requireAdmin(event)
@@ -12,21 +13,30 @@ export default defineEventHandler(async (event) => {
   }
 
   const db = getDb()
-  const tasks = db.select().from(schema.tasks).all()
-  const task = tasks.find((row: any) => matchesTaskId(row, id))
+  const publicTask = db
+    .select()
+    .from(schema.tasks)
+    .where(eq(schema.tasks.taskId, id))
+    .get()
 
-  if (!task) {
+  if (publicTask) {
+    return detailTask(publicTask as any)
+  }
+
+  const localId = parseLocalTaskId(id)
+  if (localId === null) {
     return adminError(event, 404, 'Task not found', 'task_not_found')
   }
 
-  return detailTask(task as any)
-})
+  const localTask = db
+    .select()
+    .from(schema.tasks)
+    .where(eq(schema.tasks.id, localId))
+    .get()
 
-function matchesTaskId(task: { id: number; taskId: string }, value: string): boolean {
-  const localId = Number(value)
-  if (Number.isInteger(localId) && localId > 0 && task.id === localId) {
-    return true
+  if (!localTask) {
+    return adminError(event, 404, 'Task not found', 'task_not_found')
   }
 
-  return task.taskId === value
-}
+  return detailTask(localTask as any)
+})
