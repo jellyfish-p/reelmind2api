@@ -51,6 +51,27 @@ export type TaskDetail = TaskSummary & {
   resultData: unknown
 }
 
+export function countBy<T extends object>(
+  rows: T[],
+  field: keyof T,
+): Record<string, number> {
+  return rows.reduce<Record<string, number>>((counts, row) => {
+    const key = String(row[field])
+    counts[key] = (counts[key] ?? 0) + 1
+    return counts
+  }, {})
+}
+
+export function sumCredits(rows: Array<Pick<Task, 'creditsUsed'>>): number {
+  return rows.reduce((total, row) => {
+    const credits = row.creditsUsed
+    return (
+      total +
+      (typeof credits === 'number' && Number.isFinite(credits) ? credits : 0)
+    )
+  }, 0)
+}
+
 export function parseTaskFilters(query: Query): TaskFilters {
   const filters: TaskFilters = {}
 

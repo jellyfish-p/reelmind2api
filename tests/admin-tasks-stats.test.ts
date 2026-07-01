@@ -1,15 +1,23 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 type RouteHandler = (event: any) => Promise<unknown>
 
 const state = vi.hoisted(() => ({
   validAdmin: true,
   tasks: [] as Array<Record<string, any>>,
+  accounts: [] as Array<Record<string, any>>,
+  apiKeys: [] as Array<Record<string, any>>,
   operations: [] as Array<Record<string, any>>,
 }))
 
 vi.mock('../server/utils/api-auth', () => ({
   authenticateAdmin: vi.fn(async () => state.validAdmin),
+}))
+
+vi.mock('../server/utils/config', () => ({
+  loadConfig: vi.fn(() => ({
+    api_keys: state.apiKeys,
+  })),
 }))
 
 vi.mock('drizzle-orm', () => {
@@ -72,6 +80,10 @@ vi.mock('drizzle-orm', () => {
 
 vi.mock('../server/db', () => {
   const schema = {
+    accounts: {
+      id: { key: 'id' },
+      tokenExpiresAt: { key: 'tokenExpiresAt' },
+    },
     tasks: {
       id: { key: 'id' },
       taskId: { key: 'taskId' },
@@ -85,11 +97,13 @@ vi.mock('../server/db', () => {
   }
 
   function rowsFor(table: any) {
+    if (table === schema.accounts) return state.accounts
     if (table === schema.tasks) return state.tasks
     throw new Error('Unexpected table in admin task test')
   }
 
   function tableName(table: any) {
+    if (table === schema.accounts) return 'accounts'
     if (table === schema.tasks) return 'tasks'
     return 'unknown'
   }
@@ -294,6 +308,8 @@ describe('admin task logs API', () => {
     vi.clearAllMocks()
     state.validAdmin = true
     state.tasks = taskRows()
+    state.accounts = []
+    state.apiKeys = []
     state.operations = []
     vi.stubGlobal('defineEventHandler', (handler: RouteHandler) => handler)
     vi.stubGlobal('setResponseStatus', vi.fn())
@@ -530,6 +546,108 @@ describe('admin task logs API', () => {
     state.validAdmin = false
     const handler = await loadRoute('../server/api/admin/tasks/index.get')
     const event = { query: {} }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 401)
+    expect(result).toEqual({
+      error: {
+        message: 'Invalid admin key',
+        code: 'invalid_admin_key',
+      },
+    })
+  })
+})
+
+describe('admin stats API', () => {
+  const now = 1_700_200_000_000
+
+  beforeEach(() => {
+    vi.resetModules()
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    state.validAdmin = true
+    state.tasks = [
+      {
+        id: 1,
+        status: 'completed',
+        type: 'video',
+        creditsUsed: 3,
+        createdAt: now - 1_000,
+      },
+      {
+        id: 2,
+        status: 'failed',
+        type: 'image',
+        creditsUsed: 1.5,
+        createdAt: now - 60_000,
+      },
+      {
+        id: 3,
+        status: 'completed',
+        type: 'video',
+        creditsUsed: null,
+        createdAt: now - 86_400_001,
+      },
+    ]
+    state.accounts = [
+      { id: 1, tokenExpiresAt: now - 1 },
+      { id: 2, tokenExpiresAt: now + 60_000 },
+      { id: 3, tokenExpiresAt: null },
+    ]
+    state.apiKeys = [
+      { key: 'sk-one', name: 'One' },
+      { key: 'sk-two', name: 'Two' },
+    ]
+    state.operations = []
+    vi.stubGlobal('defineEventHandler', (handler: RouteHandler) => handler)
+    vi.stubGlobal('setResponseStatus', vi.fn())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('returns dashboard totals for tasks, accounts, and API keys', async () => {
+    const handler = await loadRoute('../server/api/admin/stats.get')
+
+    const result = await handler({})
+
+    expect(result).toEqual({
+      tasks: {
+        total: 3,
+        recent: 2,
+        byStatus: {
+          completed: 2,
+          failed: 1,
+        },
+        byType: {
+          video: 2,
+          image: 1,
+        },
+        totalCreditsUsed: 4.5,
+      },
+      accounts: {
+        total: 3,
+        expiredTokens: 1,
+      },
+      apiKeys: {
+        total: 2,
+      },
+    })
+    expect(state.operations).toContainEqual(
+      expect.objectContaining({ type: 'all', table: 'tasks' }),
+    )
+    expect(state.operations).toContainEqual(
+      expect.objectContaining({ type: 'all', table: 'accounts' }),
+    )
+  })
+
+  it('rejects stats reads without a valid admin key', async () => {
+    state.validAdmin = false
+    const handler = await loadRoute('../server/api/admin/stats.get')
+    const event = {}
 
     const result = await handler(event)
 
