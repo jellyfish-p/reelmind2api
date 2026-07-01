@@ -23,11 +23,13 @@ export default defineEventHandler(async (event) => {
     return adminError(event, 404, 'Account not found', 'account_not_found')
   }
 
-  db.update(schema.tasks)
-    .set({ accountId: null })
-    .where(eq(schema.tasks.accountId, id))
-    .run()
-  db.delete(schema.accounts).where(eq(schema.accounts.id, id)).run()
+  db.transaction((tx: any) => {
+    tx.update(schema.tasks)
+      .set({ accountId: null })
+      .where(eq(schema.tasks.accountId, id))
+      .run()
+    tx.delete(schema.accounts).where(eq(schema.accounts.id, id)).run()
+  })
 
   return { deleted: true }
 })

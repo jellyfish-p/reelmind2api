@@ -7,6 +7,9 @@ const state = vi.hoisted(() => ({
   nextId: 2,
   accounts: [] as Array<Record<string, any>>,
   tasks: [] as Array<Record<string, any>>,
+  inTransaction: false,
+  transactionCalls: 0,
+  operations: [] as Array<Record<string, any>>,
 }))
 
 vi.mock('../server/utils/api-auth', () => ({
@@ -22,6 +25,7 @@ vi.mock('../server/db', () => {
     accounts: {
       id: { key: 'id' },
       email: { key: 'email' },
+      googleSub: { key: 'googleSub' },
     },
     tasks: {
       accountId: { key: 'accountId' },
@@ -32,6 +36,40 @@ vi.mock('../server/db', () => {
     if (table === schema.accounts) return state.accounts
     if (table === schema.tasks) return state.tasks
     return []
+  }
+
+  function tableName(table: any) {
+    if (table === schema.accounts) return 'accounts'
+    if (table === schema.tasks) return 'tasks'
+    return 'unknown'
+  }
+
+  function uniqueConstraintError(column: 'email' | 'google_sub') {
+    return Object.assign(
+      new Error(`UNIQUE constraint failed: accounts.${column}`),
+      { code: 'SQLITE_CONSTRAINT_UNIQUE' },
+    )
+  }
+
+  function assertUniqueAccount(values: Record<string, any>, ignoredId?: number) {
+    if (
+      values.email !== undefined &&
+      state.accounts.some(
+        (account) => account.id !== ignoredId && account.email === values.email,
+      )
+    ) {
+      throw uniqueConstraintError('email')
+    }
+    if (
+      values.googleSub !== undefined &&
+      values.googleSub !== null &&
+      state.accounts.some(
+        (account) =>
+          account.id !== ignoredId && account.googleSub === values.googleSub,
+      )
+    ) {
+      throw uniqueConstraintError('google_sub')
+    }
   }
 
   const db = {
@@ -48,6 +86,7 @@ vi.mock('../server/db', () => {
       values: vi.fn((values: Record<string, any>) => ({
         run: vi.fn(() => {
           if (table !== schema.accounts) return {}
+          assertUniqueAccount(values)
           const row = { id: state.nextId++, ...values }
           state.accounts.push(row)
           return { lastInsertRowid: row.id }
@@ -59,6 +98,12 @@ vi.mock('../server/db', () => {
         where: vi.fn((predicate: (row: any) => boolean) => ({
           run: vi.fn(() => {
             for (const row of rowsFor(table).filter(predicate)) {
+              if (table === schema.accounts) assertUniqueAccount(values, row.id)
+              state.operations.push({
+                type: 'update',
+                table: tableName(table),
+                inTransaction: state.inTransaction,
+              })
               Object.assign(row, values)
             }
           }),
@@ -68,12 +113,26 @@ vi.mock('../server/db', () => {
     delete: vi.fn((table: any) => ({
       where: vi.fn((predicate: (row: any) => boolean) => ({
         run: vi.fn(() => {
+          state.operations.push({
+            type: 'delete',
+            table: tableName(table),
+            inTransaction: state.inTransaction,
+          })
           if (table === schema.accounts) {
             state.accounts = state.accounts.filter((row) => !predicate(row))
           }
         }),
       })),
     })),
+    transaction: vi.fn((callback: (tx: any) => unknown) => {
+      state.transactionCalls++
+      state.inTransaction = true
+      try {
+        return callback(db)
+      } finally {
+        state.inTransaction = false
+      }
+    }),
   }
 
   return {
@@ -107,6 +166,9 @@ function resetState() {
     { id: 10, accountId: 1, status: 'completed' },
     { id: 11, accountId: 1, status: 'failed' },
   ]
+  state.inTransaction = false
+  state.transactionCalls = 0
+  state.operations = []
 }
 
 describe('admin account token pool API', () => {
@@ -224,6 +286,75 @@ describe('admin account token pool API', () => {
     expect(deleted).toEqual({ deleted: true })
     expect(state.accounts.find((account) => account.id === 2)).toBeUndefined()
     expect(state.tasks.find((task) => task.id === 12)?.accountId).toBeNull()
+  })
+
+  it('returns 409 JSON when creating a duplicate account', async () => {
+    const handler = await loadRoute('../server/api/admin/accounts/index.post')
+    const event = {
+      body: {
+        email: 'one@example.test',
+        googleSub: 'google-two',
+      },
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 409)
+    expect(result).toEqual({
+      error: {
+        message: 'Account already exists',
+        code: 'duplicate_account',
+      },
+    })
+    expect(state.accounts).toHaveLength(1)
+  })
+
+  it('returns 409 JSON when updating account metadata to a duplicate', async () => {
+    state.accounts.push({
+      id: 2,
+      email: 'two@example.test',
+      name: 'Two',
+      googleSub: 'google-two',
+      accessToken: null,
+      refreshToken: null,
+      tokenExpiresAt: null,
+      createdAt: 200,
+      updatedAt: 200,
+    })
+    const handler = await loadRoute('../server/api/admin/accounts/[id].patch')
+    const event = {
+      params: { id: '2' },
+      body: { googleSub: 'google-one' },
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 409)
+    expect(result).toEqual({
+      error: {
+        message: 'Account already exists',
+        code: 'duplicate_account',
+      },
+    })
+    expect(state.accounts.find((account) => account.id === 2)?.googleSub).toBe(
+      'google-two',
+    )
+  })
+
+  it('detaches tasks and deletes accounts inside a transaction', async () => {
+    const handler = await loadRoute('../server/api/admin/accounts/[id].delete')
+
+    const result = await handler({ params: { id: '1' } })
+
+    expect(result).toEqual({ deleted: true })
+    expect(state.transactionCalls).toBe(1)
+    expect(state.operations).toEqual([
+      { type: 'update', table: 'tasks', inTransaction: true },
+      { type: 'update', table: 'tasks', inTransaction: true },
+      { type: 'delete', table: 'accounts', inTransaction: true },
+    ])
+    expect(state.accounts).toHaveLength(0)
+    expect(state.tasks.every((task) => task.accountId === null)).toBe(true)
   })
 
   it('returns one sanitized account with its task count', async () => {

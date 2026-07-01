@@ -136,6 +136,14 @@ export function isAccountInputError(error: unknown): error is AccountInputError 
   return error instanceof AccountInputError
 }
 
+export function isUniqueAccountConstraintError(error: unknown): boolean {
+  const err = error as any
+  const message = String(err?.message || '')
+  return err?.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    (err?.code === 'SQLITE_CONSTRAINT' && message.includes('UNIQUE')) ||
+    message.includes('UNIQUE constraint failed')
+}
+
 export function parseAccountId(value: unknown): number | null {
   if (Array.isArray(value)) return parseAccountId(value[0])
   const id = Number(value)
