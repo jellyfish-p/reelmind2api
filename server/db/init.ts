@@ -2,7 +2,8 @@ import { getDb } from '../db'
 
 export async function initializeDatabase() {
   const db = getDb()
-  db.run(`
+  const statements = [
+    `
     CREATE TABLE IF NOT EXISTS accounts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT NOT NULL UNIQUE,
@@ -13,7 +14,9 @@ export async function initializeDatabase() {
       token_expires_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
-    );
+    )
+    `,
+    `
     CREATE TABLE IF NOT EXISTS api_tokens (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       key TEXT NOT NULL UNIQUE,
@@ -24,7 +27,9 @@ export async function initializeDatabase() {
       enabled INTEGER NOT NULL DEFAULT 1,
       last_used_at INTEGER,
       created_at INTEGER NOT NULL
-    );
+    )
+    `,
+    `
     CREATE TABLE IF NOT EXISTS tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       task_id TEXT NOT NULL UNIQUE,
@@ -51,6 +56,11 @@ export async function initializeDatabase() {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       completed_at INTEGER
-    );
-  `)
+    )
+    `,
+  ]
+
+  for (const statement of statements) {
+    db.run(statement)
+  }
 }

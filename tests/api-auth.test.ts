@@ -14,6 +14,7 @@ const mockState = vi.hoisted(() => ({
   tokens: [] as Array<Record<string, any>>,
   insertError: null as Error | null,
   insertRaceToken: null as Record<string, any> | null,
+  schemaRuns: [] as string[],
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -52,7 +53,16 @@ vi.mock('../server/db', () => {
   ) => mockState.tokens.filter((token) => !predicate || predicate(token))
 
   const db = {
-    run: vi.fn(),
+    run: vi.fn((sql: string) => {
+      mockState.schemaRuns.push(sql)
+      const statements = sql
+        .split(';')
+        .map((statement) => statement.trim())
+        .filter(Boolean)
+      if (statements.length > 1) {
+        throw new Error('The supplied SQL string contains more than one statement')
+      }
+    }),
     insert: vi.fn(() => ({
       values: vi.fn((values: Record<string, any>) => ({
         run: vi.fn(() => {
@@ -116,6 +126,7 @@ describe('API key authentication', () => {
     mockState.tokens = []
     mockState.insertError = null
     mockState.insertRaceToken = null
+    mockState.schemaRuns = []
     vi.stubGlobal('getHeader', (event: any, name: string) => {
       const headers = event.headers || {}
       return headers[name] ?? headers[name.toLowerCase()] ?? null
@@ -347,5 +358,16 @@ describe('API key authentication', () => {
     await initializeDatabase()
 
     expect(mockState.tokens).toHaveLength(0)
+  })
+
+  it('runs each schema statement separately for better-sqlite3', async () => {
+    await initializeDatabase()
+
+    expect(mockState.schemaRuns).toHaveLength(3)
+    expect(mockState.schemaRuns).toEqual([
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS accounts'),
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS api_tokens'),
+      expect.stringContaining('CREATE TABLE IF NOT EXISTS tasks'),
+    ])
   })
 })
