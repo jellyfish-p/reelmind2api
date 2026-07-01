@@ -182,6 +182,58 @@ describe('OpenAI-compatible generation routes', () => {
     expect(routeMockState.incrementUsage).toHaveBeenCalledWith(42, 3)
   })
 
+  it('submits Seedance 2 mixed image video audio references in one video request', async () => {
+    const event = {
+      body: {
+        model: 'seedance2',
+        prompt: 'Use @Image1 for character, @Video1 for motion, and @Audio1 for rhythm',
+        image: 'https://cdn.example.test/character.png',
+        videoUrl: 'https://cdn.example.test/motion.mp4',
+        audio_urls: ['https://cdn.example.test/music.wav'],
+        duration: 10,
+      },
+    }
+
+    const handler = await loadVideoGenerationRoute()
+    await handler(event)
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]
+    const payload = JSON.parse(init?.body as string)
+    expect(payload).toMatchObject({
+      model_id: 'seedance2',
+      gen_type: 'reference-to-video',
+      reference_image_urls: ['https://cdn.example.test/character.png'],
+      video_urls: ['https://cdn.example.test/motion.mp4'],
+      audio_urls: ['https://cdn.example.test/music.wav'],
+    })
+    expect(routeMockState.insertedTasks[0].parameters).toBe(JSON.stringify(payload))
+  })
+
+  it('rejects Seedance 2 audio references that BytePlus does not accept', async () => {
+    const event = {
+      body: {
+        model: 'seedance2',
+        prompt: 'Use @Audio1 as background',
+        audio_urls: ['https://gen-refer-img.reelmind.ai/user/background.flac'],
+      },
+    }
+
+    const handler = await loadVideoGenerationRoute()
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 400)
+    expect(result).toMatchObject({
+      error: {
+        message: expect.stringContaining('Unsupported audio format'),
+        type: 'invalid_request_error',
+        code: 400,
+      },
+    })
+    expect(fetch).not.toHaveBeenCalled()
+    expect(routeMockState.insertedTasks).toHaveLength(0)
+    expect(routeMockState.incrementUsage).not.toHaveBeenCalled()
+  })
+
   it('does not save or charge a task when upstream submission fails', async () => {
     vi.stubGlobal(
       'fetch',

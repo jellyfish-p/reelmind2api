@@ -177,6 +177,22 @@ function resetState() {
   state.failSelect = false
 }
 
+function encodeSupabaseSessionCookieParts(session: Record<string, unknown>) {
+  const encoded = `base64-${Buffer.from(JSON.stringify(session), 'utf8').toString('base64url')}`
+  return {
+    cookiePart0: encoded.slice(0, 48),
+    cookiePart1: encoded.slice(48),
+  }
+}
+
+function encodeSupabaseSessionCookie(session: Record<string, unknown>): string {
+  const { cookiePart0, cookiePart1 } = encodeSupabaseSessionCookieParts(session)
+  return [
+    `sb-ucljsqjaggrhupdayakz-auth-token.0=${cookiePart0}`,
+    `sb-ucljsqjaggrhupdayakz-auth-token.1=${cookiePart1}`,
+  ].join('; ')
+}
+
 describe('admin account token pool API', () => {
   beforeEach(() => {
     vi.resetModules()
@@ -310,6 +326,91 @@ describe('admin account token pool API', () => {
     expect(state.tasks.find((task) => task.id === 12)?.accountId).toBeNull()
   })
 
+  it('creates an account from a Supabase auth cookie header', async () => {
+    const cookieHeader = encodeSupabaseSessionCookie({
+      access_token: 'cookie-access-token',
+      refresh_token: 'cookie-refresh-token',
+      expires_at: 1782896787,
+      user: {
+        id: 'user-uuid',
+        email: 'cookie@example.test',
+        user_metadata: {
+          full_name: 'Cookie User',
+          provider_id: 'google-cookie',
+        },
+      },
+    })
+    const handler = await loadRoute('../server/api/admin/accounts/index.post')
+
+    const created = await handler({
+      body: { email: '', cookieHeader },
+    })
+
+    expect(created).toMatchObject({
+      id: 2,
+      email: 'cookie@example.test',
+      name: 'Cookie User',
+      googleSub: 'google-cookie',
+      hasAccessToken: true,
+      hasRefreshToken: true,
+      tokenExpiresAt: 1782896787000,
+    })
+    expect(state.accounts.find((account) => account.id === 2)).toMatchObject({
+      accessToken: 'cookie-access-token',
+      refreshToken: 'cookie-refresh-token',
+      tokenExpiresAt: 1782896787000,
+    })
+  })
+
+  it('creates from split Supabase auth cookie fields and shows saved inputs on detail', async () => {
+    const { cookiePart0, cookiePart1 } = encodeSupabaseSessionCookieParts({
+      access_token: 'split-access-token',
+      refresh_token: 'split-refresh-token',
+      expires_at: 1782896787,
+      user: {
+        id: 'user-uuid',
+        email: 'split@example.test',
+        user_metadata: {
+          full_name: 'Split Cookie User',
+          provider_id: 'google-split',
+        },
+      },
+    })
+    const createHandler = await loadRoute('../server/api/admin/accounts/index.post')
+
+    await createHandler({
+      body: {
+        cookiePart0,
+        cookiePart1,
+        authorizationHeader: 'Bearer split-access-token',
+      },
+    })
+
+    const listHandler = await loadRoute('../server/api/admin/accounts/index.get')
+    const list = await listHandler({})
+    expect((list as any).data[1]).not.toHaveProperty('cookiePart0')
+    expect((list as any).data[1]).not.toHaveProperty('cookiePart1')
+    expect((list as any).data[1]).not.toHaveProperty('authorizationHeader')
+
+    const detailHandler = await loadRoute('../server/api/admin/accounts/[id].get')
+    const detail = await detailHandler({ params: { id: '2' } })
+
+    expect(detail).toMatchObject({
+      id: 2,
+      email: 'split@example.test',
+      cookiePart0,
+      cookiePart1,
+      authorizationHeader: 'Bearer split-access-token',
+    })
+    expect(state.accounts.find((account) => account.id === 2)).toMatchObject({
+      cookiePart0,
+      cookiePart1,
+      authorizationHeader: 'Bearer split-access-token',
+      accessToken: 'split-access-token',
+      refreshToken: 'split-refresh-token',
+    })
+  })
+
   it('returns 409 JSON when creating a duplicate account', async () => {
     const handler = await loadRoute('../server/api/admin/accounts/index.post')
     const event = {
@@ -413,6 +514,7 @@ describe('admin account token pool API', () => {
       accessTokenPreview: 'acce***cret',
       hasRefreshToken: true,
       refreshTokenPreview: 'refr***cret',
+      authorizationHeader: 'Bearer access-token-secret',
       taskCount: 2,
     })
     expect(result).not.toHaveProperty('accessToken')

@@ -34,7 +34,9 @@ export default defineEventHandler(async (event) => {
       .where(eq(schema.tasks.accountId, id))
       .all()
 
-    return sanitizeAccount(account as any, tasks as any[])
+    return sanitizeAccount(account as any, tasks as any[], {
+      includeTokenInputs: true,
+    })
   } catch {
     return adminDatabaseError(event)
   }

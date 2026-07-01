@@ -2,7 +2,7 @@ import { randomUUID } from 'uncrypto'
 import { authenticateApiKey, incrementUsage } from '../../../utils/api-auth'
 import { getDb, schema } from '../../../db'
 import { loadConfig } from '../../../utils/config'
-import { buildVideoGenerationPayload } from '../../../utils/generation-payload'
+import { buildVideoGenerationPayload, unsupportedAudioUrl } from '../../../utils/generation-payload'
 import { readUpstreamTaskId } from '../../../utils/upstream-task'
 import { eq } from 'drizzle-orm'
 
@@ -16,14 +16,33 @@ interface VideoGenerationRequest {
   user?: string
   negative_prompt?: string
   image?: string
+  image_url?: string
+  imageUrl?: string
+  reference_image_urls?: string[]
+  referenceImageUrls?: string[]
+  video?: string
+  video_url?: string
+  videoUrl?: string
+  video_urls?: string[]
+  videoUrls?: string[]
+  audio?: string
+  audio_url?: string
+  audioUrl?: string
+  audio_urls?: string[]
+  audioUrls?: string[]
   fps?: number
+  ratio?: string
   aspect_ratio?: string
   resolution?: string
   gen_type?: string
+  genType?: string
   movement_amplitude?: string
   bgm?: boolean
   generate_audio?: boolean
+  generateAudio?: boolean
   generation_mode?: string
+  generationMode?: string
+  watermark?: boolean
 }
 
 const VIDEO_GENERATION_COST = 3
@@ -42,6 +61,18 @@ export default defineEventHandler(async (event) => {
   }
 
   const payload = buildVideoGenerationPayload(body)
+  const rejectedAudioUrl = unsupportedAudioUrl((payload.audio_urls as string[] | undefined) || [])
+  if (rejectedAudioUrl) {
+    setResponseStatus(event, 400)
+    return {
+      error: {
+        message: `Unsupported audio format for Seedance 2: ${rejectedAudioUrl}. Allowed formats: mp3, wav.`,
+        type: 'invalid_request_error',
+        code: 400,
+      },
+    }
+  }
+
   const model = payload.model_id
   const taskId = `vid-${randomUUID()}`
   const now = Date.now()
@@ -74,7 +105,10 @@ export default defineEventHandler(async (event) => {
       }
     }
 
-    const referenceImageUrls = payload.reference_image_urls as string[] | undefined
+    const referenceImageUrls = (
+      (payload.reference_image_urls as string[] | undefined) ||
+      (payload.image_urls as string[] | undefined)
+    )
 
     db.insert(schema.tasks).values({
       taskId,
@@ -84,7 +118,7 @@ export default defineEventHandler(async (event) => {
       prompt: body.prompt,
       negativePrompt: payload.negative_prompt as string | undefined,
       imageUrl: referenceImageUrls?.[0],
-      aspectRatio: payload.aspect_ratio as string | undefined,
+      aspectRatio: (payload.aspect_ratio || payload.ratio) as string | undefined,
       duration: payload.duration as number | undefined,
       resolution: payload.resolution as string | undefined,
       parameters: JSON.stringify(payload),

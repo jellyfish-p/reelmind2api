@@ -8,6 +8,9 @@ export const accounts = sqliteTable('accounts', {
   accessToken: text('access_token'),
   refreshToken: text('refresh_token'),
   tokenExpiresAt: integer('token_expires_at'),
+  cookiePart0: text('cookie_part_0'),
+  cookiePart1: text('cookie_part_1'),
+  authorizationHeader: text('authorization_header'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 })

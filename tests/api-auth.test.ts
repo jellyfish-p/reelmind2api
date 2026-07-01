@@ -363,11 +363,14 @@ describe('API key authentication', () => {
   it('runs each schema statement separately for better-sqlite3', async () => {
     await initializeDatabase()
 
-    expect(mockState.schemaRuns).toHaveLength(3)
+    expect(mockState.schemaRuns).toHaveLength(6)
     expect(mockState.schemaRuns).toEqual([
       expect.stringContaining('CREATE TABLE IF NOT EXISTS accounts'),
       expect.stringContaining('CREATE TABLE IF NOT EXISTS api_tokens'),
       expect.stringContaining('CREATE TABLE IF NOT EXISTS tasks'),
+      expect.stringContaining('ALTER TABLE accounts ADD COLUMN cookie_part_0 TEXT'),
+      expect.stringContaining('ALTER TABLE accounts ADD COLUMN cookie_part_1 TEXT'),
+      expect.stringContaining('ALTER TABLE accounts ADD COLUMN authorization_header TEXT'),
     ])
   })
 })

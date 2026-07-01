@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const pollState = vi.hoisted(() => ({
   taskUpdates: [] as Array<Record<string, any>>,
   apiTokenUpdates: [] as Array<Record<string, any>>,
+  accountUpdates: [] as Array<Record<string, any>>,
   account: {
     id: 1,
     accessToken: 'upstream-access-token',
@@ -15,6 +16,8 @@ const pollState = vi.hoisted(() => ({
     accountId: 1,
     apiTokenId: 42,
   },
+  activeTasks: [] as Array<Record<string, any>>,
+  expiringAccounts: [] as Array<Record<string, any>>,
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -64,7 +67,11 @@ vi.mock('../server/db', () => {
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => ({
         where: vi.fn(() => ({
-          all: vi.fn(() => (table === schema.tasks ? [pollState.activeTask] : [])),
+          all: vi.fn(() => {
+            if (table === schema.tasks) return pollState.activeTasks
+            if (table === schema.accounts) return pollState.expiringAccounts
+            return []
+          }),
           get: vi.fn(() => (table === schema.accounts ? pollState.account : undefined)),
         })),
       })),
@@ -78,6 +85,9 @@ vi.mock('../server/db', () => {
             }
             if (table === schema.apiTokens) {
               pollState.apiTokenUpdates.push(values)
+            }
+            if (table === schema.accounts) {
+              pollState.accountUpdates.push(values)
             }
           }),
         })),
@@ -98,6 +108,9 @@ describe('token polling', () => {
     vi.useFakeTimers()
     pollState.taskUpdates = []
     pollState.apiTokenUpdates = []
+    pollState.accountUpdates = []
+    pollState.activeTasks = [pollState.activeTask]
+    pollState.expiringAccounts = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -137,4 +150,68 @@ describe('token polling', () => {
     })
     expect(pollState.apiTokenUpdates).toHaveLength(0)
   })
+
+  it('refreshes expiring Supabase account tokens with the Supabase auth endpoint', async () => {
+    const now = new Date('2026-07-01T00:00:00Z')
+    vi.setSystemTime(now)
+    pollState.activeTasks = []
+    pollState.expiringAccounts = [
+      {
+        id: 2,
+        accessToken: jwt({
+          iss: 'https://ucljsqjaggrhupdayakz.supabase.co/auth/v1',
+          exp: 1782896787,
+        }),
+        refreshToken: 'old-refresh-token',
+        tokenExpiresAt: now.getTime() - 1000,
+      },
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            access_token: 'new-supabase-access-token',
+            refresh_token: 'new-supabase-refresh-token',
+            expires_in: 3600,
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      ),
+    )
+    const { startTokenPolling, stopTokenPolling } = await import(
+      '../server/utils/token-manager'
+    )
+
+    await startTokenPolling()
+    stopTokenPolling()
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://ucljsqjaggrhupdayakz.supabase.co/auth/v1/token?grant_type=refresh_token',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json',
+          apikey: expect.stringContaining('sb_publishable_'),
+        }),
+        body: JSON.stringify({ refresh_token: 'old-refresh-token' }),
+      }),
+    )
+    expect(pollState.accountUpdates[0]).toMatchObject({
+      accessToken: 'new-supabase-access-token',
+      refreshToken: 'new-supabase-refresh-token',
+      tokenExpiresAt: now.getTime() + 3600_000,
+      updatedAt: now.getTime(),
+    })
+  })
 })
+
+function jwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+    .toString('base64url')
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  return `${header}.${body}.signature`
+}

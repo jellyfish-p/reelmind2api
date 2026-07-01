@@ -71,6 +71,70 @@ describe('generation payload helpers', () => {
     expect(payload).not.toHaveProperty('aspectRatio')
   })
 
+  it('builds Seedance 2 reference video payloads with image, video, and audio inputs', () => {
+    const payload = buildVideoGenerationPayload({
+      model: 'seedance2',
+      prompt: 'Use @Image1 for character, @Video1 for motion, and @Audio1 for rhythm',
+      reference_image_urls: ['https://cdn.example.test/character.png'],
+      video: 'https://cdn.example.test/motion.mp4',
+      audioUrl: 'https://cdn.example.test/music.wav',
+      duration: 10,
+      generateAudio: true,
+    })
+
+    expect(payload).toMatchObject({
+      model_id: 'seedance2',
+      prompt: 'Use @Image1 for character, @Video1 for motion, and @Audio1 for rhythm',
+      gen_type: 'reference-to-video',
+      reference_image_urls: ['https://cdn.example.test/character.png'],
+      video_urls: ['https://cdn.example.test/motion.mp4'],
+      audio_urls: ['https://cdn.example.test/music.wav'],
+      duration: 10,
+      generate_audio: true,
+    })
+  })
+
+  it('preserves ReelMind Seedance 2 Mini mixed-media field names from captured traffic', () => {
+    const imageUrls = [
+      'https://gen-refer-img.reelmind.ai/user/first.jpg',
+      'https://gen-refer-img.reelmind.ai/user/second.png',
+      'https://gen-refer-img.reelmind.ai/user/third.jpg',
+      'https://gen-refer-img.reelmind.ai/user/fourth.jpg',
+    ]
+    const payload = buildVideoGenerationPayload({
+      model_id: 'a4834b81-32e8-4128-ad66-2f95b96e26ba',
+      prompt: '@图1 dropped from sky with @音频1 as background',
+      gen_type: 'image-to-video',
+      duration: 4,
+      ratio: '9:16',
+      resolution: '720p',
+      generate_audio: true,
+      generation_mode: 'fast',
+      watermark: false,
+      image_urls: imageUrls,
+      refer_img_url: imageUrls[0],
+      video_urls: ['https://gen-refer-img.reelmind.ai/user/motion.mp4'],
+      audio_urls: ['https://gen-refer-img.reelmind.ai/user/music.wav'],
+    })
+
+    expect(payload).toMatchObject({
+      model_id: 'a4834b81-32e8-4128-ad66-2f95b96e26ba',
+      prompt: '@图1 dropped from sky with @音频1 as background',
+      gen_type: 'image-to-video',
+      duration: 4,
+      ratio: '9:16',
+      resolution: '720p',
+      generate_audio: true,
+      generation_mode: 'fast',
+      watermark: false,
+      image_urls: imageUrls,
+      refer_img_url: imageUrls[0],
+      video_urls: ['https://gen-refer-img.reelmind.ai/user/motion.mp4'],
+      audio_urls: ['https://gen-refer-img.reelmind.ai/user/music.wav'],
+    })
+    expect(payload).not.toHaveProperty('reference_image_urls')
+  })
+
   it('builds snake_case image generation payloads for text, edit, and variation requests', () => {
     const textToImage = buildImageGenerationPayload(
       {

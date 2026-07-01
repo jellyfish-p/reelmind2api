@@ -12,6 +12,9 @@ export async function initializeDatabase() {
       access_token TEXT,
       refresh_token TEXT,
       token_expires_at INTEGER,
+      cookie_part_0 TEXT,
+      cookie_part_1 TEXT,
+      authorization_header TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
@@ -62,5 +65,20 @@ export async function initializeDatabase() {
 
   for (const statement of statements) {
     db.run(statement)
+  }
+
+  ensureColumn(db, 'accounts', 'cookie_part_0', 'TEXT')
+  ensureColumn(db, 'accounts', 'cookie_part_1', 'TEXT')
+  ensureColumn(db, 'accounts', 'authorization_header', 'TEXT')
+}
+
+function ensureColumn(db: any, table: string, column: string, type: string) {
+  try {
+    db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+  } catch (error: any) {
+    const message = String(error?.message || '')
+    if (!message.toLowerCase().includes('duplicate column')) {
+      throw error
+    }
   }
 }
