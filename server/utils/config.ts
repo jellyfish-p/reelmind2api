@@ -3,7 +3,7 @@ import { load as loadYaml } from 'js-yaml'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
-interface ApiKeyConfig {
+export interface ApiKeyConfig {
   key: string
   name: string
   quota: number
@@ -11,17 +11,17 @@ interface ApiKeyConfig {
   enabled: boolean
 }
 
-interface ReelmindConfig {
+export interface ReelmindConfig {
   api_base: string
   web_base: string
   google_client_id: string
 }
 
-interface DatabaseConfig {
+export interface DatabaseConfig {
   path: string
 }
 
-interface PollingConfig {
+export interface PollingConfig {
   interval: number
   max_retries: number
   token_refresh_margin: number
@@ -38,7 +38,7 @@ export interface AppConfig {
 
 let _config: AppConfig | null = null
 
-function getConfigPath(): string {
+export function getConfigPath(): string {
   const cwd = process.cwd()
   const paths = [
     resolve(cwd, 'config.yaml'),
