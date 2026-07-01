@@ -13,8 +13,12 @@ import {
 } from './config'
 import { maskSecret } from './admin-response'
 
-export type SanitizedApiKeyConfig = Omit<ApiKeyConfig, 'key'> & {
+export type SanitizedApiKeyConfig = {
   key: string | null
+  name: string
+  quota: number
+  rate_limit: number
+  enabled: boolean
 }
 
 export type SanitizedAppConfig = Omit<AppConfig, 'admin_key' | 'api_keys'> & {
@@ -114,9 +118,12 @@ export function getSanitizedConfig(
 }
 
 export function sanitizeApiKeys(keys: ApiKeyConfig[] = []): SanitizedApiKeyConfig[] {
-  return keys.map((apiKey) => ({
-    ...apiKey,
-    key: maskSecret(apiKey.key),
+  return keys.map(({ key, name, quota, rate_limit, enabled }) => ({
+    key: maskSecret(key),
+    name,
+    quota,
+    rate_limit,
+    enabled,
   }))
 }
 
@@ -271,7 +278,15 @@ function validateApiKeyInput(input: unknown): ApiKeyConfig {
 }
 
 function validateApiKeyPatch(patch: unknown): ApiKeyPatch {
-  return validateApiKeyFields(patch)
+  const apiKeyPatch = validateApiKeyFields(patch)
+  if (Object.keys(apiKeyPatch).length === 0) {
+    throw new ApiKeyConfigError(
+      'Invalid API key payload',
+      'invalid_api_key',
+      400,
+    )
+  }
+  return apiKeyPatch
 }
 
 function validateApiKeyFields(value: unknown): ApiKeyPatch {

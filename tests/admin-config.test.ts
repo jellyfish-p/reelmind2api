@@ -119,6 +119,16 @@ describe('admin config API', () => {
     vi.clearAllMocks()
     adminAuthState.valid = false
     configState.current = testConfig()
+    const pendingWrites = new Map<string, string>()
+    fsState.writeFileSync.mockImplementation((path, yaml) => {
+      pendingWrites.set(String(path), String(yaml))
+    })
+    fsState.renameSync.mockImplementation((tempPath, targetPath) => {
+      const yaml = pendingWrites.get(String(tempPath))
+      if (yaml !== undefined && String(targetPath) === configState.configPath) {
+        configState.current = loadYaml(yaml) as any
+      }
+    })
     vi.stubGlobal('defineEventHandler', (handler: RouteHandler) => handler)
     vi.stubGlobal('setResponseStatus', vi.fn())
     vi.stubGlobal('readBody', async (event: any) => event.body)
@@ -236,6 +246,37 @@ describe('admin config API', () => {
     })
   })
 
+  it('omits extra API key config fields from sanitized admin responses', async () => {
+    adminAuthState.valid = true
+    configState.current = {
+      ...testConfig(),
+      api_keys: [
+        {
+          ...testConfig().api_keys[0],
+          secret_note: 'do not expose this',
+          metadata: { owner: 'internal' },
+        },
+      ],
+    }
+    const handler = await loadRoute('../server/api/admin/api-keys/index.get')
+
+    const result = await handler({})
+
+    expect(result).toEqual({
+      data: [
+        {
+          key: 'sk-l***-key',
+          name: 'Primary',
+          quota: 100,
+          rate_limit: 60,
+          enabled: true,
+        },
+      ],
+    })
+    expect((result as any).data[0]).not.toHaveProperty('secret_note')
+    expect((result as any).data[0]).not.toHaveProperty('metadata')
+  })
+
   it('creates API keys, persists the raw key, and returns the sanitized entry', async () => {
     adminAuthState.valid = true
     const handler = await loadRoute('../server/api/admin/api-keys/index.post')
@@ -325,6 +366,68 @@ describe('admin config API', () => {
     expect(configState.resetConfigCache).not.toHaveBeenCalled()
   })
 
+  it('creates, updates, lists, and deletes API keys through persisted route state', async () => {
+    adminAuthState.valid = true
+    const createHandler = await loadRoute('../server/api/admin/api-keys/index.post')
+    const updateHandler = await loadRoute('../server/api/admin/api-keys/[key].patch')
+    const listHandler = await loadRoute('../server/api/admin/api-keys/index.get')
+    const deleteHandler = await loadRoute('../server/api/admin/api-keys/[key].delete')
+
+    const created = await createHandler({
+      body: {
+        key: 'sk-flow-key',
+        name: 'Flow key',
+        quota: 10,
+        rate_limit: 5,
+        enabled: true,
+      },
+    })
+    const updated = await updateHandler({
+      params: { key: encodeURIComponent('sk-flow-key') },
+      body: {
+        key: 'sk-flow-renamed',
+        name: 'Flow renamed',
+        quota: 20,
+        rate_limit: 8,
+        enabled: false,
+      },
+    })
+    const listedAfterUpdate = await listHandler({})
+    const deleted = await deleteHandler({
+      params: { key: encodeURIComponent('sk-flow-renamed') },
+    })
+    const listedAfterDelete = await listHandler({})
+
+    expect(created).toEqual({
+      key: 'sk-f***-key',
+      name: 'Flow key',
+      quota: 10,
+      rate_limit: 5,
+      enabled: true,
+    })
+    expect(updated).toEqual({
+      key: 'sk-f***amed',
+      name: 'Flow renamed',
+      quota: 20,
+      rate_limit: 8,
+      enabled: false,
+    })
+    expect((listedAfterUpdate as any).data).toContainEqual({
+      key: 'sk-f***amed',
+      name: 'Flow renamed',
+      quota: 20,
+      rate_limit: 8,
+      enabled: false,
+    })
+    expect(deleted).toEqual({ deleted: true })
+    expect((listedAfterDelete as any).data).not.toContainEqual(
+      expect.objectContaining({ name: 'Flow renamed' }),
+    )
+    expect(lastWrittenConfig().api_keys).not.toContainEqual(
+      expect.objectContaining({ key: 'sk-flow-renamed' }),
+    )
+  })
+
   it('updates API keys by decoded path key, supports key replacement, and returns the sanitized entry', async () => {
     adminAuthState.valid = true
     configState.current = {
@@ -405,6 +508,28 @@ describe('admin config API', () => {
       error: {
         message: 'API key already exists',
         code: 'duplicate_api_key',
+      },
+    })
+    expect(fsState.writeFileSync).not.toHaveBeenCalled()
+    expect(fsState.renameSync).not.toHaveBeenCalled()
+    expect(configState.resetConfigCache).not.toHaveBeenCalled()
+  })
+
+  it('rejects empty API key update payloads with a 400 response', async () => {
+    adminAuthState.valid = true
+    const handler = await loadRoute('../server/api/admin/api-keys/[key].patch')
+    const event = {
+      params: { key: encodeURIComponent('sk-local-admin-key') },
+      body: {},
+    }
+
+    const result = await handler(event)
+
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 400)
+    expect(result).toEqual({
+      error: {
+        message: 'Invalid API key payload',
+        code: 'invalid_api_key',
       },
     })
     expect(fsState.writeFileSync).not.toHaveBeenCalled()
