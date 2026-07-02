@@ -11,6 +11,7 @@ export const accounts = sqliteTable('accounts', {
   cookiePart0: text('cookie_part_0'),
   cookiePart1: text('cookie_part_1'),
   authorizationHeader: text('authorization_header'),
+  creditsRemaining: real('credits_remaining'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 })

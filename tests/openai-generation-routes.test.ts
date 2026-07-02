@@ -7,6 +7,11 @@ const routeMockState = vi.hoisted(() => ({
     id: 1,
     accessToken: 'upstream-access-token',
   },
+  reserveAccountForCredits: vi.fn(() => ({
+    id: 1,
+    accessToken: 'upstream-access-token',
+  })),
+  refundReservedCredits: vi.fn(),
   authenticateApiKey: vi.fn(async () => ({
     tokenId: 42,
     tokenKey: 'test-key',
@@ -27,6 +32,11 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('../server/utils/api-auth', () => ({
   authenticateApiKey: routeMockState.authenticateApiKey,
   incrementUsage: routeMockState.incrementUsage,
+}))
+
+vi.mock('../server/utils/account-pool', () => ({
+  reserveAccountForCredits: routeMockState.reserveAccountForCredits,
+  refundReservedCredits: routeMockState.refundReservedCredits,
 }))
 
 vi.mock('../server/utils/config', () => ({
@@ -105,6 +115,11 @@ describe('OpenAI-compatible generation routes', () => {
       id: 1,
       accessToken: 'upstream-access-token',
     }
+    routeMockState.reserveAccountForCredits.mockReturnValue({
+      id: 1,
+      accessToken: 'upstream-access-token',
+    })
+    routeMockState.refundReservedCredits.mockReset()
     routeMockState.authenticateApiKey.mockResolvedValue({
       tokenId: 42,
       tokenKey: 'test-key',
@@ -142,7 +157,8 @@ describe('OpenAI-compatible generation routes', () => {
     const handler = await loadVideoGenerationRoute()
     await handler(event)
 
-    expect(routeMockState.authenticateApiKey).toHaveBeenCalledWith(event, 3)
+    expect(routeMockState.authenticateApiKey).toHaveBeenCalledWith(event, 50)
+    expect(routeMockState.reserveAccountForCredits).toHaveBeenCalledWith(50)
     expect(fetch).toHaveBeenCalledTimes(1)
 
     const [url, init] = vi.mocked(fetch).mock.calls[0]
@@ -179,7 +195,7 @@ describe('OpenAI-compatible generation routes', () => {
       accountId: 1,
       parameters: JSON.stringify(payload),
     })
-    expect(routeMockState.incrementUsage).toHaveBeenCalledWith(42, 3)
+    expect(routeMockState.incrementUsage).toHaveBeenCalledWith(42, 50)
   })
 
   it('submits Seedance 2 mixed image video audio references in one video request', async () => {
@@ -232,6 +248,7 @@ describe('OpenAI-compatible generation routes', () => {
     expect(fetch).not.toHaveBeenCalled()
     expect(routeMockState.insertedTasks).toHaveLength(0)
     expect(routeMockState.incrementUsage).not.toHaveBeenCalled()
+    expect(routeMockState.refundReservedCredits).not.toHaveBeenCalled()
   })
 
   it('does not save or charge a task when upstream submission fails', async () => {
@@ -257,6 +274,33 @@ describe('OpenAI-compatible generation routes', () => {
     })
     expect(routeMockState.insertedTasks).toHaveLength(0)
     expect(routeMockState.incrementUsage).not.toHaveBeenCalled()
+    expect(routeMockState.refundReservedCredits).toHaveBeenCalledWith(1, 10)
+  })
+
+  it('returns 503 without upstream submission when no account has enough credits', async () => {
+    routeMockState.reserveAccountForCredits.mockReturnValueOnce(null)
+    const event = {
+      body: {
+        prompt: 'a cinematic city sunrise',
+      },
+    }
+
+    const handler = await loadVideoGenerationRoute()
+    const result = await handler(event)
+
+    expect(routeMockState.reserveAccountForCredits).toHaveBeenCalledWith(10)
+    expect(setResponseStatus).toHaveBeenCalledWith(event, 503)
+    expect(result).toMatchObject({
+      error: {
+        message: expect.stringContaining('No ReelMind account'),
+        type: 'api_error',
+        code: 'no_available_account',
+      },
+    })
+    expect(fetch).not.toHaveBeenCalled()
+    expect(routeMockState.insertedTasks).toHaveLength(0)
+    expect(routeMockState.incrementUsage).not.toHaveBeenCalled()
+    expect(routeMockState.refundReservedCredits).not.toHaveBeenCalled()
   })
 
   it('does not save or charge a task when upstream omits a task id', async () => {
@@ -287,6 +331,7 @@ describe('OpenAI-compatible generation routes', () => {
     })
     expect(routeMockState.insertedTasks).toHaveLength(0)
     expect(routeMockState.incrementUsage).not.toHaveBeenCalled()
+    expect(routeMockState.refundReservedCredits).toHaveBeenCalledWith(1, 10)
   })
 
   it('submits image generations with reserved cost and route-owned generation type', async () => {
@@ -303,7 +348,8 @@ describe('OpenAI-compatible generation routes', () => {
     const handler = await loadImageGenerationRoute()
     await handler(event)
 
-    expect(routeMockState.authenticateApiKey).toHaveBeenCalledWith(event, 1)
+    expect(routeMockState.authenticateApiKey).toHaveBeenCalledWith(event, 5)
+    expect(routeMockState.reserveAccountForCredits).toHaveBeenCalledWith(5)
     const [, init] = vi.mocked(fetch).mock.calls[0]
     const payload = JSON.parse(init?.body as string)
     expect(payload).toMatchObject({
@@ -321,7 +367,7 @@ describe('OpenAI-compatible generation routes', () => {
       accountId: 1,
       parameters: JSON.stringify(payload),
     })
-    expect(routeMockState.incrementUsage).toHaveBeenCalledWith(42, 1)
+    expect(routeMockState.incrementUsage).toHaveBeenCalledWith(42, 5)
   })
 
   it('submits image edits and variations with route-owned generation types', async () => {
@@ -342,8 +388,9 @@ describe('OpenAI-compatible generation routes', () => {
 
     expect(routeMockState.authenticateApiKey).toHaveBeenLastCalledWith(
       editEvent,
-      2,
+      5,
     )
+    expect(routeMockState.reserveAccountForCredits).toHaveBeenLastCalledWith(5)
     let [, init] = vi.mocked(fetch).mock.calls.at(-1)!
     let payload = JSON.parse(init?.body as string)
     expect(payload).toMatchObject({
@@ -356,7 +403,7 @@ describe('OpenAI-compatible generation routes', () => {
     })
     expect(payload.reference_image_urls[0]).toMatch(/^data:image\/png;base64,/)
     expect(payload.mask_url).toMatch(/^data:image\/png;base64,/)
-    expect(routeMockState.incrementUsage).toHaveBeenLastCalledWith(42, 2)
+    expect(routeMockState.incrementUsage).toHaveBeenLastCalledWith(42, 5)
 
     const variationEvent = {
       formData: new Map<string, any>([
@@ -372,8 +419,9 @@ describe('OpenAI-compatible generation routes', () => {
 
     expect(routeMockState.authenticateApiKey).toHaveBeenLastCalledWith(
       variationEvent,
-      1,
+      5,
     )
+    expect(routeMockState.reserveAccountForCredits).toHaveBeenLastCalledWith(5)
     ;[, init] = vi.mocked(fetch).mock.calls.at(-1)!
     payload = JSON.parse(init?.body as string)
     expect(payload).toMatchObject({
@@ -386,6 +434,6 @@ describe('OpenAI-compatible generation routes', () => {
     expect(payload).not.toHaveProperty('modelId')
     expect(payload).not.toHaveProperty('imageUrl')
     expect(payload).not.toHaveProperty('type')
-    expect(routeMockState.incrementUsage).toHaveBeenLastCalledWith(42, 1)
+    expect(routeMockState.incrementUsage).toHaveBeenLastCalledWith(42, 5)
   })
 })

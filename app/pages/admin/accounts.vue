@@ -11,7 +11,7 @@
     <div v-else class="card" style="padding:0">
       <table>
         <thead>
-          <tr><th>Account</th><th>Tokens</th><th>Expires</th><th>Updated</th><th></th></tr>
+          <tr><th>Account</th><th>Tokens</th><th>Credits</th><th>Expires</th><th>Updated</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="a in accounts" :key="a.id">
@@ -22,6 +22,10 @@
             <td>
               <span class="badge" :class="a.hasAccessToken ? 'badge-green' : 'badge-gray'" title="access token">A:{{ a.hasAccessToken ? 'yes' : 'no' }}</span>
               <span class="badge" :class="a.hasRefreshToken ? 'badge-green' : 'badge-gray'" style="margin-left:4px" title="refresh token">R:{{ a.hasRefreshToken ? 'yes' : 'no' }}</span>
+            </td>
+            <td>
+              <span v-if="a.creditsRemaining !== null" class="badge" :class="a.creditsRemaining > 0 ? 'badge-green' : 'badge-red'">{{ fmtCredits(a.creditsRemaining) }}</span>
+              <span v-else class="muted">unknown</span>
             </td>
             <td>
               <template v-if="a.tokenExpiresAt">
@@ -36,7 +40,7 @@
               <button class="btn btn-sm btn-danger" @click="confirmDelete(a)">Delete</button>
             </td>
           </tr>
-          <tr v-if="!accounts.length"><td colspan="5" class="muted">No accounts.</td></tr>
+          <tr v-if="!accounts.length"><td colspan="6" class="muted">No accounts.</td></tr>
         </tbody>
       </table>
     </div>
@@ -55,11 +59,14 @@
           <div class="field full"><label>Bearer Token</label>
             <textarea v-model="mForm.authorizationHeader" class="input" rows="3" placeholder="Bearer ..."></textarea>
           </div>
+          <div class="field"><label>Credits Remaining</label>
+            <input v-model.number="mForm.creditsRemaining" class="input" type="number" min="0" step="0.01" placeholder="Unknown">
+          </div>
         </div>
         <p v-if="mError" class="error-text">{{ mError }}</p>
         <div class="row" style="margin-top:12px; justify-content:flex-end">
           <button class="btn" @click="modal = false">Cancel</button>
-          <button class="btn btn-primary" :disabled="mSaving || !hasTokenInput" @click="submit">{{ mSaving ? 'Saving…' : 'Save' }}</button>
+          <button class="btn btn-primary" :disabled="mSaving || !canSubmit" @click="submit">{{ mSaving ? 'Saving…' : 'Save' }}</button>
         </div>
       </div>
     </div>
@@ -91,6 +98,10 @@ function fmt(ts: number | null) {
   return new Date(ts).toLocaleString()
 }
 
+function fmtCredits(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2)
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -114,6 +125,7 @@ const mForm = ref({
   cookiePart0: '',
   cookiePart1: '',
   authorizationHeader: '',
+  creditsRemaining: null as number | string | null,
 })
 const hasTokenInput = computed(
   () => Boolean(
@@ -121,6 +133,7 @@ const hasTokenInput = computed(
     mForm.value.authorizationHeader.trim(),
   ),
 )
+const canSubmit = computed(() => editMode.value || hasTokenInput.value)
 
 function openCreate() {
   editMode.value = false
@@ -129,6 +142,7 @@ function openCreate() {
     cookiePart0: '',
     cookiePart1: '',
     authorizationHeader: '',
+    creditsRemaining: null,
   }
   mError.value = ''
   modal.value = true
@@ -140,6 +154,7 @@ async function openEdit(a: SanitizedAccount) {
     cookiePart0: '',
     cookiePart1: '',
     authorizationHeader: '',
+    creditsRemaining: null,
   }
   mError.value = ''
   modal.value = true
@@ -150,6 +165,7 @@ async function openEdit(a: SanitizedAccount) {
       cookiePart0: detail.cookiePart0 || '',
       cookiePart1: detail.cookiePart1 || '',
       authorizationHeader: detail.authorizationHeader || '',
+      creditsRemaining: detail.creditsRemaining,
     }
   } catch (e: any) {
     mError.value = e.message
@@ -164,6 +180,8 @@ async function submit() {
     if (mForm.value.cookiePart0.trim()) tokenInput.cookiePart0 = mForm.value.cookiePart0.trim()
     if (mForm.value.cookiePart1.trim()) tokenInput.cookiePart1 = mForm.value.cookiePart1.trim()
     if (mForm.value.authorizationHeader.trim()) tokenInput.authorizationHeader = mForm.value.authorizationHeader.trim()
+    const creditsRemaining = normalizeCreditsInput(mForm.value.creditsRemaining)
+    if (creditsRemaining !== undefined) tokenInput.creditsRemaining = creditsRemaining
 
     if (editMode.value) {
       await api.updateAccount(mForm.value.id, tokenInput)
@@ -177,6 +195,12 @@ async function submit() {
   } finally {
     mSaving.value = false
   }
+}
+
+function normalizeCreditsInput(value: number | string | null): number | null | undefined {
+  if (value === null || value === '') return editMode.value ? null : undefined
+  const credits = Number(value)
+  return Number.isFinite(credits) ? credits : undefined
 }
 
 // delete

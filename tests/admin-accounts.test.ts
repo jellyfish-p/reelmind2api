@@ -162,6 +162,7 @@ function resetState() {
       accessToken: 'access-token-secret',
       refreshToken: 'refresh-token-secret',
       tokenExpiresAt: 1,
+      creditsRemaining: 4.5,
       createdAt: 100,
       updatedAt: 100,
     },
@@ -240,6 +241,7 @@ describe('admin account token pool API', () => {
           refreshTokenPreview: 'refr***cret',
           tokenExpiresAt: 1,
           tokenExpired: true,
+          creditsRemaining: 4.5,
           taskCount: 2,
           createdAt: 100,
           updatedAt: 100,
@@ -275,6 +277,7 @@ describe('admin account token pool API', () => {
         accessToken: 'new-access-token',
         refreshToken: 'new-refresh-token',
         tokenExpiresAt: Date.now() + 60_000,
+        creditsRemaining: 12.5,
       },
     })
 
@@ -286,6 +289,7 @@ describe('admin account token pool API', () => {
       accessTokenPreview: 'new-***oken',
       hasRefreshToken: true,
       refreshTokenPreview: 'new-***oken',
+      creditsRemaining: 12.5,
       taskCount: 0,
     })
     expect(created).not.toHaveProperty('accessToken')
@@ -302,6 +306,7 @@ describe('admin account token pool API', () => {
         accessToken: null,
         refreshToken: null,
         tokenExpiresAt: null,
+        creditsRemaining: null,
       },
     })
 
@@ -314,6 +319,7 @@ describe('admin account token pool API', () => {
       refreshTokenPreview: null,
       tokenExpiresAt: null,
       tokenExpired: false,
+      creditsRemaining: null,
     })
     expect(state.accounts.find((account) => account.id === 2)?.accessToken).toBeNull()
 

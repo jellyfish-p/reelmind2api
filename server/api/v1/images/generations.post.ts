@@ -2,9 +2,10 @@ import { randomUUID } from 'uncrypto'
 import { authenticateApiKey, incrementUsage } from '../../../utils/api-auth'
 import { getDb, schema } from '../../../db'
 import { loadConfig } from '../../../utils/config'
+import { refundReservedCredits, reserveAccountForCredits } from '../../../utils/account-pool'
+import { IMAGE_GENERATION_COST } from '../../../utils/generation-costs'
 import { buildImageGenerationPayload } from '../../../utils/generation-payload'
 import { readUpstreamTaskId } from '../../../utils/upstream-task'
-import { eq } from 'drizzle-orm'
 
 interface ImageGenerationRequest {
   model?: string
@@ -18,8 +19,6 @@ interface ImageGenerationRequest {
   negative_prompt?: string
   image?: string
 }
-
-const IMAGE_GENERATION_COST = 1
 
 export default defineEventHandler(async (event) => {
   const auth = await authenticateApiKey(event, IMAGE_GENERATION_COST)
@@ -43,8 +42,12 @@ export default defineEventHandler(async (event) => {
 
   // Submit to ReelMind
   const config = loadConfig()
-  const account = db.select().from(schema.accounts).where(eq(schema.accounts.id, 1)).get()
-  const authToken = account?.accessToken || ''
+  const account = reserveAccountForCredits(IMAGE_GENERATION_COST)
+  if (!account) {
+    setResponseStatus(event, 503)
+    return noAvailableAccountError()
+  }
+  const authToken = account.accessToken || ''
 
   try {
     const reelmindRes = await fetch(`${config.reelmind.api_base}/generation/gen-video`, {
@@ -59,6 +62,7 @@ export default defineEventHandler(async (event) => {
 
     const submission = await readUpstreamTaskId(reelmindRes)
     if (!submission.taskId) {
+      refundReservedCredits(account.id, IMAGE_GENERATION_COST)
       setResponseStatus(event, 502)
       return {
         error: {
@@ -102,7 +106,18 @@ export default defineEventHandler(async (event) => {
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     }
   } catch (err: any) {
+    refundReservedCredits(account.id, IMAGE_GENERATION_COST)
     setResponseStatus(event, 500)
     return { error: { message: `Submission failed: ${err.message}`, type: 'api_error', code: 500 } }
   }
 })
+
+function noAvailableAccountError() {
+  return {
+    error: {
+      message: 'No ReelMind account has enough credits for this request',
+      type: 'api_error',
+      code: 'no_available_account',
+    },
+  }
+}

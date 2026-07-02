@@ -15,6 +15,7 @@ export async function initializeDatabase() {
       cookie_part_0 TEXT,
       cookie_part_1 TEXT,
       authorization_header TEXT,
+      credits_remaining REAL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
@@ -70,6 +71,7 @@ export async function initializeDatabase() {
   ensureColumn(db, 'accounts', 'cookie_part_0', 'TEXT')
   ensureColumn(db, 'accounts', 'cookie_part_1', 'TEXT')
   ensureColumn(db, 'accounts', 'authorization_header', 'TEXT')
+  ensureColumn(db, 'accounts', 'credits_remaining', 'REAL')
 }
 
 function ensureColumn(db: any, table: string, column: string, type: string) {

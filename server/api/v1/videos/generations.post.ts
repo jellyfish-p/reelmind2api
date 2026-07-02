@@ -2,9 +2,10 @@ import { randomUUID } from 'uncrypto'
 import { authenticateApiKey, incrementUsage } from '../../../utils/api-auth'
 import { getDb, schema } from '../../../db'
 import { loadConfig } from '../../../utils/config'
+import { refundReservedCredits, reserveAccountForCredits } from '../../../utils/account-pool'
+import { videoGenerationCost } from '../../../utils/generation-costs'
 import { buildVideoGenerationPayload, unsupportedAudioUrl } from '../../../utils/generation-payload'
 import { readUpstreamTaskId } from '../../../utils/upstream-task'
-import { eq } from 'drizzle-orm'
 
 interface VideoGenerationRequest {
   model?: string
@@ -45,22 +46,21 @@ interface VideoGenerationRequest {
   watermark?: boolean
 }
 
-const VIDEO_GENERATION_COST = 3
-
 export default defineEventHandler(async (event) => {
-  const auth = await authenticateApiKey(event, VIDEO_GENERATION_COST)
+  const body = await readBody(event) as VideoGenerationRequest
+  const payload = buildVideoGenerationPayload(body)
+  const generationCost = videoGenerationCost(payload.duration)
+  const auth = await authenticateApiKey(event, generationCost)
   if (!auth) {
     setResponseStatus(event, 401)
     return { error: { message: 'Invalid API key', type: 'authentication_error', code: 401 } }
   }
 
-  const body = await readBody(event) as VideoGenerationRequest
   if (!body.prompt) {
     setResponseStatus(event, 400)
     return { error: { message: 'prompt is required', type: 'invalid_request_error', code: 400 } }
   }
 
-  const payload = buildVideoGenerationPayload(body)
   const rejectedAudioUrl = unsupportedAudioUrl((payload.audio_urls as string[] | undefined) || [])
   if (rejectedAudioUrl) {
     setResponseStatus(event, 400)
@@ -79,8 +79,12 @@ export default defineEventHandler(async (event) => {
 
   const db = getDb()
   const config = loadConfig()
-  const account = db.select().from(schema.accounts).where(eq(schema.accounts.id, 1)).get()
-  const authToken = account?.accessToken || ''
+  const account = reserveAccountForCredits(generationCost)
+  if (!account) {
+    setResponseStatus(event, 503)
+    return noAvailableAccountError()
+  }
+  const authToken = account.accessToken || ''
 
   try {
     const reelmindRes = await fetch(`${config.reelmind.api_base}/generation/gen-video`, {
@@ -95,6 +99,7 @@ export default defineEventHandler(async (event) => {
 
     const submission = await readUpstreamTaskId(reelmindRes)
     if (!submission.taskId) {
+      refundReservedCredits(account.id, generationCost)
       setResponseStatus(event, 502)
       return {
         error: {
@@ -130,7 +135,7 @@ export default defineEventHandler(async (event) => {
       updatedAt: now,
     }).run()
 
-    await incrementUsage(auth.tokenId, VIDEO_GENERATION_COST)
+    await incrementUsage(auth.tokenId, generationCost)
 
     return {
       id: taskId,
@@ -142,7 +147,18 @@ export default defineEventHandler(async (event) => {
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     }
   } catch (err: any) {
+    refundReservedCredits(account.id, generationCost)
     setResponseStatus(event, 500)
     return { error: { message: `Submission failed: ${err.message}`, type: 'api_error', code: 500 } }
   }
 })
+
+function noAvailableAccountError() {
+  return {
+    error: {
+      message: 'No ReelMind account has enough credits for this request',
+      type: 'api_error',
+      code: 'no_available_account',
+    },
+  }
+}

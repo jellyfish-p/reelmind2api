@@ -30,6 +30,7 @@ export interface SanitizedAccount {
   refreshTokenPreview: string | null
   tokenExpiresAt: number | null
   tokenExpired: boolean
+  creditsRemaining: number | null
   taskCount: number
   createdAt: number
   updatedAt: number

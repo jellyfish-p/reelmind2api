@@ -1,20 +1,20 @@
 import httpx
-import secrets
-import hashlib
-import base64
-import time
 import re
+import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
 ACCOUNTS_FILE = "./accounts.txt"
-SUPABASE_PUBLIC_KEY = "sb_publishable_Oeql6-nxTd5RIa1tjlCMKw_O1v3aZD2"
-REGISTER_URL = "https://ucljsqjaggrhupdayakz.supabase.co/auth/v1/signup?redirect_to=https%3A%2F%2Freelmind.ai%2Fauth%2Fcallback"
-SUPABASE_HEADERS = {
-    "Content-Type": "application/json",
-    "apikey": SUPABASE_PUBLIC_KEY,
-    "Authorization": f"Bearer {SUPABASE_PUBLIC_KEY}",
-}
+SITE_URL = "https://reelmind.ai"
+LOGIN_BUTTON_TEXTS = ["登入", "登录", "Log in", "Log In", "Sign in", "Sign In"]
+SUBMIT_TEXTS = ["注册", "Sign up", "Sign Up", "Create account", "Continue"]
+
+
+def step(index: int, total: int, message: str):
+    print(f"[{index}/{total}] {message}")
 
 
 def get_accounts():
@@ -28,35 +28,60 @@ def get_accounts():
     return result
 
 
-def create_token_and_challenge():
-    code_verifier = secrets.token_hex(64)
-    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-    code_challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
-    return code_verifier, code_challenge
+def parse_iso(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
-def get_check_url(token_url: str):
+def get_check_url(token_url: str, since: str | None = None, max_retries: int = 12, retry_interval: int = 5):
     token = token_url.split("=")[1]
     res1 = httpx.get("https://api.nineemail.com/api/get?token=" + token).json()
     rt = res1["data"]["refresh_token"]
     mail: str = res1["data"]["email"]
     encoded_mail = mail.replace("@", "%40")
     client_id = res1["data"]["client_id"]
-    try:
-        mail_res = httpx.get(
-            f"https://api.nineemail.com/api/proxy?endpoint=mail-new&refresh_token={rt}&client_id={client_id}&email={encoded_mail}&mailbox=Junk&response_type=json"
-        )
-    except Exception as e:
-        print(f"Error occurred while fetching mail for {mail}: {e}")
-        return None
-    data: list[dict] = mail_res.json().get("data") or []
-    # example data: [{"send":"","subject":"","text":"","html":"","date":""}]
-    data = [d for d in data if "team <team@resend.reelmind.ai>" == d.get("send")]
-    if not data:
-        return None
-    text = data[0].get("text") or ""
-    match = re.search(r"https?://[^\s\]]+", text)
-    return match.group(0) if match else None
+    since_dt = parse_iso(since) if since else None
+
+    for attempt in range(max_retries):
+        try:
+            mail_res = httpx.get(
+                f"https://api.nineemail.com/api/proxy?endpoint=mail-new&refresh_token={rt}&client_id={client_id}&email={encoded_mail}&mailbox=Junk&response_type=json"
+            )
+        except Exception as e:
+            print(f"Error occurred while fetching mail for {mail}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_interval)
+                continue
+            return None
+
+        data: list[dict] = mail_res.json().get("data") or []
+        # example data: [{"send":"","subject":"","text":"","html":"","date":""}]
+        data = [d for d in data if "team <team@resend.reelmind.ai>" == d.get("send")]
+
+        if since_dt:
+            fresh = []
+            for d in data:
+                d_date = d.get("date")
+                if not d_date:
+                    continue
+                try:
+                    if parse_iso(d_date) > since_dt:
+                        fresh.append(d)
+                except Exception:
+                    fresh.append(d)
+            data = fresh
+
+        if data:
+            data.sort(key=lambda d: d.get("date") or "", reverse=True)
+            text = data[0].get("text") or ""
+            match = re.search(r"https?://[^\s\]]+", text)
+            if match:
+                return match.group(0)
+
+        if attempt < max_retries - 1:
+            print(f"  No fresh confirmation email yet, retrying ({attempt + 1}/{max_retries})...")
+            time.sleep(retry_interval)
+
+    return None
 
 
 def format_registration_error(email: str, exc: Exception):
@@ -76,49 +101,116 @@ def format_registration_error(email: str, exc: Exception):
     )
 
 
-def print_confirmation_response(email: str, response):
-    print(f"Email confirmation request for {email}: HTTP {response.status_code}")
-    location = response.headers.get("location")
-    if location:
-        print(f"Redirected to: {location}")
+def click_first_visible(page, texts, timeout=10000, roles=("button", "link", "tab"), exact=False):
+    for role in roles:
+        for text in texts:
+            locator = page.get_by_role(role, name=text, exact=exact).first
+            try:
+                locator.wait_for(state="visible", timeout=timeout)
+                locator.click()
+                return True
+            except PlaywrightTimeoutError:
+                continue
+    return False
+
+
+def open_auth_modal(page):
+    for text in LOGIN_BUTTON_TEXTS:
+        locator = page.get_by_role("button", name=text, exact=False).first
+        try:
+            locator.wait_for(state="visible", timeout=15000)
+            locator.click()
+            return
+        except PlaywrightTimeoutError:
+            continue
+    raise RuntimeError("Could not find the login button to open the auth modal")
+
+
+def fill_signup_form(page, email, password):
+    email_input = page.locator("#email")
+    email_input.wait_for(state="visible", timeout=10000)
+    email_input.fill(email)
+
+    password_input = page.locator("#password")
+    password_input.wait_for(state="visible", timeout=10000)
+    password_input.fill(password)
+
+
+def submit_signup(page):
+    submitted = click_first_visible(page, SUBMIT_TEXTS, timeout=10000, roles=("button",), exact=True)
+    if not submitted:
+        try:
+            page.locator("form:has(#email) button[type='submit']").click()
+            submitted = True
+        except PlaywrightTimeoutError:
+            pass
+    if not submitted:
+        try:
+            page.keyboard.press("Enter")
+            submitted = True
+        except Exception:
+            submitted = False
+    return submitted
+
+
+def is_logged_in(page) -> bool:
+    try:
+        result = page.evaluate(
+            "(() => { try { const r = localStorage.getItem('auth-storage'); "
+            "if (!r) return false; return JSON.parse(r)?.state?.isAuthenticated === true; "
+            "} catch { return false; } })()"
+        )
+        return bool(result)
+    except Exception:
+        return False
+
+
+def register_account(page, email, password, token_url, index, total):
+    step(index, total, f"opening {SITE_URL}")
+    page.goto(SITE_URL, wait_until="domcontentloaded")
+    step(index, total, "opening auth modal via login button")
+    open_auth_modal(page)
+    step(index, total, f"filling signup form for {email}")
+    fill_signup_form(page, email, password)
+
+    submit_time = datetime.now(timezone.utc).isoformat()
+    step(index, total, "submitting signup form")
+    if not submit_signup(page):
+        print(f"Could not submit signup form for {email}")
+        return
+
+    time.sleep(3)
+    if is_logged_in(page):
+        step(index, total, f"account already registered, logged in as {email}")
+        return
+
+    step(index, total, f"signup submitted for {email}, waiting for confirmation email...")
+    step(index, total, "fetching confirmation link from mailbox")
+    check_url = get_check_url(token_url, since=submit_time)
+    if not check_url:
+        print(f"Failed to get check URL for {email}")
+        return
+    step(index, total, f"navigating to confirmation link: {check_url}")
+    page.goto(check_url, wait_until="domcontentloaded")
+    step(index, total, f"confirmation done, final URL: {page.url}")
 
 
 def register(accounts: list[tuple[str, str, str]]):
-    for email, password, token_url in accounts:
-        try:
-            code_verifier, code_challenge = create_token_and_challenge()
-            request_json = {
-                "email": email,
-                "password": password,
-                "goture_meta_security": {},
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
-            }
-            request_cookies = {
-                "sb-ucljsqjaggrhupdayakz-auth-token-code-verifier": code_verifier
-            }
-
-            response = httpx.post(
-                REGISTER_URL,
-                json=request_json,
-                cookies=request_cookies,
-                headers=SUPABASE_HEADERS,
-            )
-            print(response_json := response.json())
-            if not response.is_success:
-                print(f"Signup failed for {email}: HTTP {response.status_code}")
-                continue
-            time.sleep(2)
-            check_url = get_check_url(token_url)
-            if check_url:
-                response = httpx.get(
-                    check_url, cookies=request_cookies, follow_redirects=False
-                )
-                print_confirmation_response(email, response)
-            else:
-                print(f"Failed to get check URL for {email}")
-        except Exception as e:
-            print(format_registration_error(email, e))
+    total = len(accounts)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False, slow_mo=300)
+        for index, (email, password, token_url) in enumerate(accounts, 1):
+            step(index, total, f"=== start {email} ===")
+            context = browser.new_context()
+            page = context.new_page()
+            try:
+                register_account(page, email, password, token_url, index, total)
+            except Exception as e:
+                print(format_registration_error(email, e))
+            finally:
+                context.close()
+                step(index, total, f"=== finished {email} ===")
+        browser.close()
 
 
 if __name__ == "__main__":

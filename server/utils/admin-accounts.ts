@@ -20,6 +20,7 @@ export type SanitizedAccount = {
   refreshTokenPreview: string | null
   tokenExpiresAt: number | null
   tokenExpired: boolean
+  creditsRemaining: number | null
   taskCount: number
   createdAt: number
   updatedAt: number
@@ -47,6 +48,7 @@ type AccountInput = Partial<{
   accessToken: unknown
   refreshToken: unknown
   tokenExpiresAt: unknown
+  creditsRemaining: unknown
   cookieHeader: unknown
   cookiePart0: unknown
   cookiePart1: unknown
@@ -60,6 +62,7 @@ const ACCOUNT_FIELDS = new Set([
   'accessToken',
   'refreshToken',
   'tokenExpiresAt',
+  'creditsRemaining',
   'cookieHeader',
   'cookiePart0',
   'cookiePart1',
@@ -88,6 +91,7 @@ export function sanitizeAccount(
     refreshTokenPreview: hasRefreshToken ? maskSecret(account.refreshToken) : null,
     tokenExpiresAt,
     tokenExpired: typeof tokenExpiresAt === 'number' && tokenExpiresAt < Date.now(),
+    creditsRemaining: account.creditsRemaining ?? null,
     taskCount: tasks.length,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
@@ -161,6 +165,12 @@ export function accountPatchValues(
       'tokenExpiresAt',
     )
   }
+  if (Object.prototype.hasOwnProperty.call(body, 'creditsRemaining')) {
+    values.creditsRemaining = normalizeNullableNumber(
+      body.creditsRemaining,
+      'creditsRemaining',
+    )
+  }
 
   if (Object.keys(values).length === 0) {
     throw new AccountInputError('Invalid account payload')
@@ -212,6 +222,12 @@ function applyOptionalCreateValues(values: NewAccount, body: AccountInput) {
     values.tokenExpiresAt = normalizeNullableInteger(
       body.tokenExpiresAt,
       'tokenExpiresAt',
+    )
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'creditsRemaining')) {
+    values.creditsRemaining = normalizeNullableNumber(
+      body.creditsRemaining,
+      'creditsRemaining',
     )
   }
 }
@@ -364,6 +380,14 @@ function normalizeNullableString(value: unknown, field: string): string | null {
 function normalizeNullableInteger(value: unknown, field: string): number | null {
   if (value === null) return null
   if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throwInvalidField(field)
+  }
+  return value
+}
+
+function normalizeNullableNumber(value: unknown, field: string): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
     throwInvalidField(field)
   }
   return value
